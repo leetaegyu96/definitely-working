@@ -1,4 +1,5 @@
-import { ArrowUp, Square, X } from 'lucide-react'
+import { ArrowUp, ImagePlus, Square, X } from 'lucide-react'
+import { imageFromTransfer } from '../../lib/image'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 
 export interface ComposerHandle {
@@ -16,16 +17,22 @@ interface Props {
   /** 입력창 위의 모드 표시 (예: 내 차례 설명 입력) */
   chip?: { label: ReactNode; onClear?(): void } | null
   footer?: ReactNode
+  /** 이미지 첨부 지원 (붙여넣기 / 끌어다 놓기 / 버튼) */
+  onImage?(file: File): void
+  attachment?: { src: string; label: string; busy?: boolean; onRemove(): void } | null
 }
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
-  { placeholder, onSend, disabled, busy, onStop, maxLength = 4000, chip, footer },
+  { placeholder, onSend, disabled, busy, onStop, maxLength = 4000, chip, footer, onImage, attachment },
   ref,
 ) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const ta = useRef<HTMLTextAreaElement>(null)
   const composing = useRef(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const canSend = (!!text.trim() || (!!attachment && !attachment.busy)) && !disabled && !sending
 
   useImperativeHandle(ref, () => ({
     focus: () => ta.current?.focus(),
@@ -44,7 +51,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 
   const submit = async () => {
     const t = text.trim()
-    if (!t || disabled || sending) return
+    if (!canSend) return
     setSending(true)
     const r = await onSend(t)
     setSending(false)
@@ -54,7 +61,33 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
 
   return (
     <div className="ac-composer-wrap">
-      <div className={`ac-composer${chip ? ' has-chip' : ''}`} onClick={() => ta.current?.focus()}>
+      <div
+        className={`ac-composer${chip ? ' has-chip' : ''}${dragging ? ' dragging' : ''}`}
+        onClick={() => ta.current?.focus()}
+        onDragOver={(e) => {
+          if (!onImage || !Array.from(e.dataTransfer.types).includes('Files')) return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          setDragging(false)
+          const f = onImage && imageFromTransfer(e.dataTransfer)
+          if (f) {
+            e.preventDefault()
+            onImage!(f)
+          }
+        }}
+      >
+        {attachment && (
+          <div className="ac-attach">
+            <img src={attachment.src} alt="" />
+            <span>{attachment.busy ? '이미지 준비 중…' : attachment.label}</span>
+            <button type="button" onClick={attachment.onRemove} aria-label="첨부 삭제" title="첨부 삭제">
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {chip && (
           <div className="ac-composer-chip">
             <span>{chip.label}</span>
@@ -73,6 +106,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           placeholder={placeholder}
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            const f = onImage && imageFromTransfer(e.clipboardData)
+            if (f) {
+              e.preventDefault()
+              onImage!(f)
+            }
+          }}
           onCompositionStart={() => (composing.current = true)}
           onCompositionEnd={() => (composing.current = false)}
           onKeyDown={(e) => {
@@ -83,7 +123,27 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
           }}
         />
         <div className="ac-composer-bar">
-          <div className="ac-composer-left">{text.length > maxLength * 0.8 && <span className="ac-count">{text.length}/{maxLength}</span>}</div>
+          <div className="ac-composer-left">
+            {onImage && (
+              <>
+                <button type="button" className="ac-attach-btn" title="이미지 첨부 (붙여넣기·끌어다 놓기도 가능)" onClick={() => fileInput.current?.click()} disabled={disabled}>
+                  <ImagePlus size={18} />
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  hidden
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) onImage(f)
+                    e.target.value = ''
+                  }}
+                />
+              </>
+            )}
+            {text.length > maxLength * 0.8 && <span className="ac-count">{text.length}/{maxLength}</span>}
+          </div>
           {busy && onStop ? (
             <button type="button" className="ac-send stop" onClick={onStop} aria-label="응답 중지">
               <Square size={12} fill="currentColor" />
@@ -93,7 +153,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(
               type="button"
               className="ac-send"
               onClick={() => void submit()}
-              disabled={!text.trim() || disabled || sending}
+              disabled={!canSend}
               aria-label="보내기"
             >
               <ArrowUp size={18} strokeWidth={2.4} />

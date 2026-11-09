@@ -16,12 +16,13 @@ type Block =
   | { k: 'quote'; text: string }
   | { k: 'hr' }
 
-function parse(src: string): Block[] {
+export function parse(src: string): Block[] {
   const lines = src.replace(/\r/g, '').split('\n')
   const out: Block[] = []
   let i = 0
   const isSpecial = (l: string) => /^(#{1,4}\s|```|\s*[-*]\s|\s*\d+\.\s|\||>\s?|---\s*$)/.test(l)
   while (i < lines.length) {
+    const start = i
     const line = lines[i]
     if (!line.trim()) {
       i++
@@ -50,10 +51,10 @@ function parse(src: string): Block[] {
       const sep = rows[1] ?? []
       const align = sep.map((c) => (c.endsWith(':') && c.startsWith(':') ? 'c' : c.endsWith(':') ? 'r' : 'l')) as ('l' | 'r' | 'c')[]
       out.push({ k: 'table', head: rows[0], align, rows: rows.slice(2) })
-    } else if (/^\s*[-*]\s\[[ x]\]/.test(line)) {
+    } else if (/^\s*[-*]\s\[[ x]\](\s|$)/.test(line)) {
       const items: { done: boolean; text: string }[] = []
-      while (i < lines.length && (m = lines[i].match(/^\s*[-*]\s\[([ x])\]\s+(.*)/))) {
-        items.push({ done: m[1] === 'x', text: m[2] })
+      while (i < lines.length && (m = lines[i].match(/^\s*[-*]\s\[([ x])\](?:\s+(.*))?$/))) {
+        items.push({ done: m[1] === 'x', text: m[2] ?? '' })
         i++
       }
       out.push({ k: 'todo', items })
@@ -80,6 +81,11 @@ function parse(src: string): Block[] {
       i++
       while (i < lines.length && lines[i].trim() && !isSpecial(lines[i])) buf.push(lines[i++])
       out.push({ k: 'p', text: buf.join('\n') })
+    }
+    // 안전장치: 어떤 분기도 줄을 소비하지 못했으면 문단으로 처리하고 진행 (무한 루프 방지)
+    if (i === start) {
+      out.push({ k: 'p', text: line })
+      i++
     }
   }
   return out

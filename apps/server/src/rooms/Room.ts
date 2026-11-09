@@ -4,6 +4,7 @@ import {
   GAME_TYPES,
   LIMITS,
   SETTINGS_SCHEMAS,
+  type ChatImage,
   type ChatMessage,
   type GameAction,
   type GameSettings,
@@ -161,8 +162,20 @@ export class Room {
     this.push({ id: newId(), ts: this.clock.now(), type: 'event', event: e })
   }
 
-  say(p: Player, text: string) {
-    this.push({ id: newId(), ts: this.clock.now(), type: 'chat', authorId: p.id, authorName: p.name, text })
+  say(p: Player, text: string, image?: ChatImage) {
+    if (image) this.expireOldImages()
+    this.push({ id: newId(), ts: this.clock.now(), type: 'chat', authorId: p.id, authorName: p.name, text, ...(image ? { image } : {}) })
+  }
+
+  /** 서버 메모리 보호: 최근 이미지 N장만 보관하고 나머지는 "만료" 표시만 남긴다 */
+  private expireOldImages() {
+    const withImage = this.chat.filter((m) => m.type === 'chat' && m.image)
+    const excess = withImage.length - (LIMITS.imagesKept - 1)
+    for (const m of withImage.slice(0, Math.max(0, excess))) {
+      if (m.type !== 'chat') continue
+      delete m.image
+      m.imageExpired = true
+    }
   }
 
   private push(msg: ChatMessage) {

@@ -16,6 +16,10 @@ export const LIMITS = {
   guessMax: 30,
   maxMembers: 16, // players + spectators
   chatHistory: 150,
+  /** 이미지 data URL 최대 길이 (약 650KB) */
+  imageMax: 900_000,
+  /** 세션당 보관하는 최근 이미지 수 (서버 메모리 보호) */
+  imagesKept: 8,
 } as const
 
 /* ───────────────────────── Games ───────────────────────── */
@@ -249,8 +253,24 @@ export type SystemEvent =
   | { code: 'twenty_replied'; text: string; reply: TwentyReply; kind: 'question' | 'guess'; correct: boolean }
   | { code: 'twenty_result'; winner: 'guessers' | 'setter' | 'none'; answer: string; solverName: string | null }
 
+export interface ChatImage {
+  dataUrl: string
+  w: number
+  h: number
+}
+
 export type ChatMessage =
-  | { id: string; ts: number; type: 'chat'; authorId: string; authorName: string; text: string }
+  | {
+      id: string
+      ts: number
+      type: 'chat'
+      authorId: string
+      authorName: string
+      text: string
+      image?: ChatImage
+      /** 보관 개수를 넘어 서버에서 지워진 이미지 */
+      imageExpired?: boolean
+    }
   | { id: string; ts: number; type: 'event'; event: SystemEvent }
 
 /* ───────────────────────── Game views (per player) ───────────────────────── */
@@ -403,12 +423,25 @@ export const configureSchema = z.object({
   sessionName: z.string().trim().min(1).max(LIMITS.sessionNameMax).optional(),
   settings: partialSettingsSchema,
 })
-export const chatSendSchema = z.object({
-  text: z
+export const chatImageSchema = z.object({
+  // 래스터 이미지만 허용 (SVG 제외)
+  dataUrl: z
     .string()
-    .transform((s) => s.trim())
-    .pipe(z.string().min(1).max(LIMITS.chatMax)),
+    .max(LIMITS.imageMax, '이미지가 너무 큽니다')
+    .regex(/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/, '지원하지 않는 이미지 형식입니다'),
+  w: z.number().int().min(1).max(4096),
+  h: z.number().int().min(1).max(4096),
 })
+export const chatSendSchema = z
+  .object({
+    text: z
+      .string()
+      .default('')
+      .transform((s) => s.trim())
+      .pipe(z.string().max(LIMITS.chatMax)),
+    image: chatImageSchema.optional(),
+  })
+  .refine((v) => v.text.length > 0 || !!v.image, '메시지를 입력하세요')
 export const gameActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('liar.describe'), text: z.string().trim().min(1).max(LIMITS.describeMax) }),
   z.object({ type: z.literal('liar.vote'), targetId: z.string().min(1).max(32) }),

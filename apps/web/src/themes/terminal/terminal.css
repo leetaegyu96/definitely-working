@@ -135,3 +135,10 @@
   .tm-sug-name { width: 16ch; }
   .tm-hints { flex-direction: column; }
 }
+
+/* 인라인 이미지 (sixel 처럼) */
+.tm-line.tl-img { padding: 4px 0 6px 2ch; }
+.tm-line.tl-img img { display: block; max-width: min(420px, 90%); max-height: 240px; height: auto; border: 1px solid #333; cursor: zoom-in; }
+.tm-attach { padding: 2px 4px 6px; font-size: 13px; }
+.tm-attach button { padding: 0; border: 0; background: none; color: var(--tm-dim); font: inherit; text-decoration: underline; }
+.tm-attach button:hover { color: #e0e0e0; }

@@ -1,4 +1,6 @@
-import { GAME_META, LIMITS, type ChatMessage, type SystemEvent } from '@relay/shared'
+import { GAME_META, LIMITS, type ChatImage, type ChatMessage, type SystemEvent } from '@relay/shared'
+import { useLightbox } from '../../components/Lightbox'
+import { imageKB, prepareImage } from '../../lib/image'
 import { ChevronRight, LogIn, LogOut, MessageSquareText, Repeat, Settings2, Sparkles, UserRound } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { gameAction, sendChat } from '../../features/rooms/api'
@@ -147,6 +149,22 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
   const stick = useRef(true)
   const composer = useRef<ComposerHandle>(null)
   const [forceChat, setForceChat] = useState(false)
+  const [pending, setPending] = useState<{ preview: string; image: ChatImage | null } | null>(null)
+  const openImage = useLightbox((s) => s.open)
+
+  async function attach(file: File) {
+    const preview = URL.createObjectURL(file)
+    setPending({ preview, image: null })
+    try {
+      const image = await prepareImage(file)
+      setPending((p) => (p && p.preview === preview ? { preview, image } : p))
+    } catch (e) {
+      setPending(null)
+      toast((e as Error).message)
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(preview), 60_000)
+    }
+  }
 
   const task = m.task
   const [twentyGuess, setTwentyGuess] = useState(false)
@@ -203,11 +221,12 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
               ? await gameAction({ type: 'baseball.guess', guess: text.replace(/\D/g, '').slice(0, 4) })
               : mode === 'twenty.ask'
                 ? await gameAction(twentyGuess ? { type: 'twenty.guess', text: text.slice(0, 30) } : { type: 'twenty.ask', text: text.slice(0, 100) })
-                : await sendChat(text)
+                : await sendChat(text, pending?.image ?? undefined)
     if (!r.ok) {
       toast(r.error.message)
       return false
     }
+    if (mode === 'chat') setPending(null)
     return true
   }
 
@@ -257,10 +276,16 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
                 </div>
               )
             const c = it.m
+            const img = c.image ? (
+              <img className="ac-img" src={c.image.dataUrl} width={c.image.w} height={c.image.h} alt="첨부 이미지" loading="lazy" onClick={() => openImage(c.image!.dataUrl)} style={{ aspectRatio: `${c.image.w} / ${c.image.h}`, height: 'auto' }} />
+            ) : c.imageExpired ? (
+              <span className="ac-img-expired">이미지 보관 기간이 지났습니다</span>
+            ) : null
             if (it.mine)
               return (
-                <div key={c.id} className={`ac-msg-user${it.grouped ? ' grouped' : ''}`}>
-                  <div className="ac-bubble">{c.text}</div>
+                <div key={c.id} className={`ac-msg-user${it.grouped ? ' grouped' : ''}${img ? ' with-img' : ''}`}>
+                  {img}
+                  {c.text && <div className="ac-bubble">{c.text}</div>}
                 </div>
               )
             return (
@@ -273,7 +298,8 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
                       <time>{fmtTime(c.ts)}</time>
                     </div>
                   )}
-                  <div className="ac-peer-text">{c.text}</div>
+                  {img}
+                  {c.text && <div className="ac-peer-text">{c.text}</div>}
                 </div>
               </div>
             )
@@ -288,6 +314,12 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
         disabled={status !== 'online'}
         maxLength={mode === 'liar.describe' ? LIMITS.describeMax : mode === 'liar.guess' ? LIMITS.guessMax : mode === 'baseball.guess' ? 4 : mode === 'word.submit' ? 20 : mode === 'twenty.ask' ? 100 : LIMITS.chatMax}
         chip={chip}
+        onImage={mode === 'chat' ? (f) => void attach(f) : undefined}
+        attachment={
+          pending && mode === 'chat'
+            ? { src: pending.preview, busy: !pending.image, label: pending.image ? `${pending.image.w}×${pending.image.h} · ${imageKB(pending.image)}KB` : '', onRemove: () => setPending(null) }
+            : null
+        }
         footer={
           <p className="ac-disclaimer">
             공유 세션의 메시지는 참여자 모두에게 표시됩니다 · 세션은 서버 재시작 시 초기화됩니다

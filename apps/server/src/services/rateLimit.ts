@@ -23,5 +23,7 @@ export function createLimits() {
     chat: new TokenBucket(6, 1.2),
     action: new TokenBucket(10, 4),
     room: new TokenBucket(6, 0.1),
+    /** 이미지: 연속 3장, 이후 약 7초에 1장 */
+    image: new TokenBucket(3, 0.15),
   }
 }

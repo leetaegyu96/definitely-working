@@ -1,5 +1,6 @@
 import type {
   Ack,
+  ChatImage,
   ClientToServerEvents,
   ConfigurePayload,
   CreateRoomPayload,
@@ -64,7 +65,7 @@ export async function leaveSession() {
 }
 
 export const configureSession = (p: ConfigurePayload) => call('room:configure', p)
-export const sendChat = (text: string) => call('chat:send', { text })
+export const sendChat = (text: string, image?: ChatImage) => call('chat:send', image ? { text, image } : { text }, image ? 20000 : 8000)
 export const startGame = () => call('game:start', {})
 export const stopGame = () => call('game:stop', {})
 export const gameAction = (a: GameAction) => call('game:action', a)

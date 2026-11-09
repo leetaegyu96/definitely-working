@@ -9,6 +9,8 @@ export interface TLine {
   scope: 'work' | 'session'
   segs: Seg[]
   cls?: string
+  /** 인라인 이미지 (채팅 첨부) */
+  img?: { src: string; w: number; h: number }
 }
 
 const NAME_COLORS = ['t-cyan', 't-magenta', 't-yellow', 't-green', 't-blue', 't-orange']
@@ -73,8 +75,15 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
   for (const m of msgs) {
     const ts = m.ts
     if (m.type === 'chat') {
+      const head: Seg[] = m.authorId === me ? [dim('> ')] : [{ t: m.authorName, cls: `${nameColor(m.authorName)} t-bold` }, dim(' › ')]
+      if (m.image || m.imageExpired) {
+        const meta = m.image ? `[image ${m.image.w}×${m.image.h} · ${Math.round((m.image.dataUrl.length * 3) / 4 / 1024)}KB]` : '[image expired]'
+        out.push(L(ts, [...head, dim(meta), ...(m.text ? [{ t: ' ' + m.text }] : [])], m.authorId === me ? 'tl-user' : undefined))
+        if (m.image) out.push({ ...L(ts, []), img: { src: m.image.dataUrl, w: m.image.w, h: m.image.h }, cls: 'tl-img' })
+        continue
+      }
       if (m.authorId === me) out.push(L(ts, [dim('> '), { t: m.text }], 'tl-user'))
-      else out.push(L(ts, [{ t: m.authorName, cls: `${nameColor(m.authorName)} t-bold` }, dim(' › '), { t: m.text }]))
+      else out.push(L(ts, [...head, { t: m.text }]))
       continue
     }
     const e = m.event

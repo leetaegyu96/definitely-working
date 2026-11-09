@@ -134,7 +134,8 @@ export function registerSocketHandlers(io: IO, rooms: RoomManager) {
       const c = need()
       if ('ok' in c) return c
       if (!limits.chat.take()) return err('RATE_LIMITED', '메시지를 너무 빠르게 보내고 있습니다')
-      c.room.say(c.player, p.text)
+      if (p.image && !limits.image.take()) return err('RATE_LIMITED', '이미지는 잠시 후 다시 보내세요')
+      c.room.say(c.player, p.text, p.image)
       return { ok: true, data: undefined }
     })
 

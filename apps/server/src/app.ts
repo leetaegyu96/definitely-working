@@ -18,7 +18,8 @@ export function createApp(opts: { clock?: Clock; serveStatic?: boolean } = {}) {
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
     path: `${base}socket.io`,
     cors: { origin: config.corsOrigin },
-    maxHttpBufferSize: 16 * 1024,
+    // 채팅 이미지(최대 약 650KB) 허용
+    maxHttpBufferSize: 1_200_000,
     pingInterval: 20_000,
     pingTimeout: 20_000,
   })

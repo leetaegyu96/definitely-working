@@ -6,6 +6,7 @@ import {
   LIMITS,
   QUIZ_CATEGORIES,
   QUIZ_CATEGORY_LABEL,
+  type ChatImage,
   type GameType,
 } from '@relay/shared'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -22,6 +23,8 @@ import {
   stopGame,
 } from '../../features/rooms/api'
 import { fmtClock, useRemaining, useServerNow, useSessionModel, type SessionModel } from '../../game-ui/model'
+import { useLightbox } from '../../components/Lightbox'
+import { imageFromTransfer, imageKB, prepareImage } from '../../lib/image'
 import { usePrefs, WORK_VIEW_KEYS } from '../../stores/prefs'
 import { useSession } from '../../stores/session'
 import { formatChat, nameColor, WORK_LOG, type TLine } from './format'
@@ -58,6 +61,7 @@ const COMMANDS: Cmd[] = [
   { name: '/answer', args: '<1-4>', desc: 'Answer the current question' },
   { name: '/guess', args: '<word>', desc: 'Guess the keyword (liar) or the answer (Requirement Discovery)' },
   { name: '/chat', args: '<text>', desc: 'Send a chat message' },
+  { name: '/image', desc: 'Attach an image (or paste one with Ctrl+V)' },
   { name: '/leave', desc: 'Leave the current session' },
   { name: '/name', args: '<name>', desc: 'Set your display name' },
   { name: '/focus', desc: 'Toggle work view (hide session output)' },
@@ -92,6 +96,21 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
   const [sugIdx, setSugIdx] = useState(0)
   const [selIdx, setSelIdx] = useState(0)
   const [forceChat, setForceChat] = useState(false)
+  const [pendingImg, setPendingImg] = useState<{ name: string; image: ChatImage | null } | null>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const openImage = useLightbox((s) => s.open)
+
+  async function attachImage(file: File) {
+    if (!useSession.getState().snapshot) return err('join a session to send images')
+    setPendingImg({ name: file.name || 'clipboard.png', image: null })
+    try {
+      const image = await prepareImage(file)
+      setPendingImg((p) => (p ? { ...p, image } : p))
+    } catch (e) {
+      setPendingImg(null)
+      err((e as Error).message)
+    }
+  }
   const shellState = useRef<ShellState>({ cwd: PROJECT, history: [] })
   const inputRef = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
@@ -259,6 +278,12 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
       return
     }
     if (!line) {
+      if (pendingImg?.image && snap && !prefs.workView) {
+        const r = await sendChat('', pendingImg.image)
+        if (!r.ok) err(r.error.message)
+        else setPendingImg(null)
+        return
+      }
       if (select) select.pick(selIdx)
       return
     }
@@ -291,8 +316,9 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
       if (inputMode === 'code') return act({ type: 'baseball.guess', guess: line.replace(/\D/g, '').slice(0, 4) })
       if (inputMode === 'ask') return act({ type: 'twenty.ask', text: line.slice(0, 100) })
       if (snap && !prefs.workView) {
-        const r = await sendChat(line)
+        const r = await sendChat(line, pendingImg?.image ?? undefined)
         if (!r.ok) err(r.error.message)
+        else setPendingImg(null)
         return
       }
       print([t('> ', 't-dim'), t(line)], 'work', 'tl-user')
@@ -489,6 +515,10 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
         if (!(n >= 1 && n <= 4)) return err('usage: /answer <1-4>')
         return act({ type: 'quiz.answer', choice: n - 1 })
       }
+      case '/image':
+        if (!need(m)) return
+        fileInput.current?.click()
+        return
       case '/chat': {
         if (!need(m)) return
         if (!rest) return err('usage: /chat <text>')
@@ -589,11 +619,17 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
           <div className="t-dim">/help for commands, /status for the current session</div>
           <div className="t-dim">cwd: {displayPath(PROJECT)}</div>
         </div>
-        {lines.map((l) => (
-          <div key={l.id} className={`tm-line ${l.cls ?? ''}`}>
-            {l.segs.length ? l.segs.map((s, i) => <span key={i} className={s.cls}>{s.t}</span>) : ' '}
-          </div>
-        ))}
+        {lines.map((l) =>
+          l.img ? (
+            <div key={l.id} className="tm-line tl-img">
+              <img src={l.img.src} alt="첨부 이미지" loading="lazy" style={{ aspectRatio: `${l.img.w} / ${l.img.h}` }} onClick={() => openImage(l.img!.src)} />
+            </div>
+          ) : (
+            <div key={l.id} className={`tm-line ${l.cls ?? ''}`}>
+              {l.segs.length ? l.segs.map((s, i) => <span key={i} className={s.cls}>{s.t}</span>) : ' '}
+            </div>
+          ),
+        )}
       </div>
 
       <div className="tm-bottom">
@@ -608,6 +644,24 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
             ))}
           </div>
         )}
+        {pendingImg && (
+          <div className="tm-attach">
+            <span className="t-accent">[image]</span> {pendingImg.name}{' '}
+            <span className="t-dim">{pendingImg.image ? `${pendingImg.image.w}×${pendingImg.image.h} · ${imageKB(pendingImg.image)}KB · Enter to send · ` : 'processing… · '}</span>
+            <button type="button" onClick={() => setPendingImg(null)}>remove</button>
+          </div>
+        )}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) void attachImage(f)
+            e.target.value = ''
+          }}
+        />
         <div className={`tm-prompt${['describe', 'guess', 'word', 'code', 'ask'].includes(inputMode) ? ' hot' : ''}`}>
           <span className="tm-prompt-label">{promptLabel}</span>
           <input
@@ -619,6 +673,13 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
             placeholder={placeholder}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={(e) => {
+              const f = imageFromTransfer(e.clipboardData)
+              if (f && inputMode === 'chat') {
+                e.preventDefault()
+                void attachImage(f)
+              }
+            }}
             onCompositionStart={() => (composing.current = true)}
             onCompositionEnd={() => (composing.current = false)}
           />

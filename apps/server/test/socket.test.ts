@@ -220,3 +220,30 @@ describe('socket flow', () => {
     x.close()
   })
 })
+
+describe('chat images', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  it('accepts raster images, rejects svg/oversized, rate-limits, keeps only recent images', async () => {
+    const a = new Client(), b = new Client()
+    const cr = await a.emit<JoinResult>('room:create', { name: 'a', gameType: 'quiz' })
+    if (!cr.ok) throw new Error()
+    await b.emit('room:join', { code: cr.data.snapshot.code, name: 'b' })
+    expect((await a.emit('chat:send', { image: { dataUrl: PNG, w: 1, h: 1 } })).ok).toBe(true)
+    expect((await a.emit('chat:send', { text: '', image: { dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=', w: 1, h: 1 } })).ok).toBe(false)
+    expect((await a.emit('chat:send', { image: { dataUrl: 'data:image/png;base64,' + 'A'.repeat(950_000), w: 1, h: 1 } })).ok).toBe(false)
+    expect((await a.emit('chat:send', { text: '' })).ok).toBe(false)
+    await new Promise((r) => setTimeout(r, 200))
+    const got = b.chat.find((m) => m.type === 'chat' && m.image)
+    expect(got && got.type === 'chat' && got.image?.dataUrl).toBe(PNG)
+    // 버킷 3장 중 1장 사용 → 2장 더 가능, 그다음은 제한
+    expect((await a.emit('chat:send', { image: { dataUrl: PNG, w: 1, h: 1 } })).ok).toBe(true)
+    expect((await a.emit('chat:send', { image: { dataUrl: PNG, w: 1, h: 1 } })).ok).toBe(true)
+    expect((await a.emit('chat:send', { image: { dataUrl: PNG, w: 1, h: 1 } })).ok).toBe(false)
+    // 서버 보관 한도: 여러 사람이 보내도 최근 8장만 유지
+    const room = server.rooms.get(cr.data.snapshot.code)!
+    for (let i = 0; i < 10; i++) room.say(room.members[0], '', { dataUrl: PNG, w: 1, h: 1 })
+    expect(room.chat.filter((m) => m.type === 'chat' && m.image).length).toBe(8)
+    expect(room.chat.some((m) => m.type === 'chat' && m.imageExpired)).toBe(true)
+    a.close(); b.close()
+  })
+})

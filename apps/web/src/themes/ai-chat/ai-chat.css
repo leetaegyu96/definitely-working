@@ -646,3 +646,17 @@
 .gp-reply.no { color: var(--bad); }
 .gp-reply-box { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--text); border-radius: 12px; }
 .gp-reply-box .gp-actions { margin-top: 6px; }
+
+/* ── 이미지 첨부 / 표시 ── */
+.ac-composer.dragging { box-shadow: 0 0 0 2px var(--focus); }
+.ac-composer-left { display: flex; align-items: center; gap: 6px; margin-left: -10px; }
+.ac-attach-btn { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: none; color: var(--text-2); }
+.ac-attach-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.ac-attach { align-self: flex-start; display: flex; align-items: center; gap: 10px; margin: 4px 0 2px -6px; padding: 6px 8px 6px 6px; border: 1px solid var(--border); border-radius: 12px; font-size: 12.5px; color: var(--text-2); }
+.ac-attach img { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; }
+.ac-attach button { display: inline-flex; border: 0; background: var(--hover); border-radius: 50%; padding: 3px; color: var(--text-2); }
+.ac-img { display: block; max-width: min(360px, 100%); max-height: 320px; border-radius: 14px; cursor: zoom-in; object-fit: contain; background: var(--surface-2); }
+.ac-msg-user .ac-img { margin-left: auto; }
+.ac-img + .ac-bubble, .ac-img + .ac-peer-text { margin-top: 6px; }
+.ac-msg-user.with-img { flex-direction: column; align-items: flex-end; }
+.ac-img-expired { display: inline-block; padding: 8px 12px; border: 1px dashed var(--border-2); border-radius: 12px; font-size: 12.5px; color: var(--text-3); }

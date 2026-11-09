@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { Lightbox } from '../components/Lightbox'
 import '../lib/socket'
 import { inviteCodeFromLocation } from '../lib/paths'
 import { usePrefs } from '../stores/prefs'
@@ -53,5 +54,10 @@ export function App() {
     document.documentElement.dataset.theme = theme
   }, [theme])
 
-  return theme === 'terminal' ? <TerminalApp /> : <AiChatApp />
+  return (
+    <>
+      {theme === 'terminal' ? <TerminalApp /> : <AiChatApp />}
+      <Lightbox />
+    </>
+  )
 }

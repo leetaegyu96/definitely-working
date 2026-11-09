@@ -11,3 +11,6 @@ button { cursor: pointer; }
 button:disabled { cursor: default; }
 :focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.lightbox { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0, 0, 0, 0.82); cursor: zoom-out; animation: lb-in 0.12s; }
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+@keyframes lb-in { from { opacity: 0; } }
