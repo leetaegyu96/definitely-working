@@ -3,7 +3,7 @@ import { LIMITS, type TwentyReply } from '@relay/shared'
 import { Check, Loader2, X } from 'lucide-react'
 import { useState } from 'react'
 import { gameAction, stopGame } from '../../features/rooms/api'
-import { fmtClock, MAFIA_WINNER, REPLY_LABEL, TWENTY_WINNER, useRemaining, type SessionModel } from '../../game-ui/model'
+import { fmtClock, MAFIA_WINNER, REPLY_LABEL, TWENTY_WINNER, useRemaining, useServerNow, type SessionModel } from '../../game-ui/model'
 import { AfterResult, run, Timer } from './GamePanel'
 
 type P = { m: SessionModel; toast(s: string): void }
@@ -67,7 +67,8 @@ export function MafiaBlock({ m, toast }: P) {
   const v = m.mafia!
   const me = m.snap.meId
   const dead = v.myRole !== 'spectator' && !v.alive.includes(me)
-  const stageLabel = { night: `${v.day}일차 밤`, day: `${v.day}일차 낮 · 토론`, vote: `${v.day}일차 투표`, result: '결과' }[v.stage]
+  const dayTag = `${v.day}/${v.maxDays}일차`
+  const stageLabel = { night: `${dayTag} 밤`, day: `${dayTag} 낮 · 토론`, vote: `${dayTag} 투표`, result: '결과' }[v.stage]
   const t = m.task
   return (
     <div className="gp">
@@ -81,13 +82,13 @@ export function MafiaBlock({ m, toast }: P) {
         {v.myRole === 'mafia' && (
           <>
             역할 <strong>마피아</strong>
-            <span className="gp-muted">동료: {v.team.filter((id) => id !== me).map((id) => m.name(id)).join(', ') || '없음 (단독)'} · 밤마다 제외할 사람을 함께 고릅니다. 시민 수 이하가 되면 승리.</span>
+            <span className="gp-muted">동료: {v.team.filter((id) => id !== me).map((id) => m.name(id)).join(', ') || '없음 (단독)'} · 밤마다 제외할 사람을 함께 고릅니다. 마피아 수가 시민 수 이상이 되면 승리, {v.maxDays}일째 투표까지 못 이기면 패배.</span>
           </>
         )}
         {v.myRole === 'citizen' && (
           <>
             역할 <strong>시민</strong>
-            <span className="gp-muted">낮 토론과 투표로 마피아를 모두 찾아내면 승리합니다.</span>
+            <span className="gp-muted">낮 토론과 투표로 마피아를 모두 찾아내거나 {v.maxDays}일째 투표까지 버티면 승리합니다.</span>
           </>
         )}
         {v.myRole === 'spectator' && <>관전 중 <span className="gp-muted">다음 라운드부터 참여합니다.</span></>}
@@ -127,7 +128,7 @@ export function MafiaBlock({ m, toast }: P) {
       {v.stage === 'day' && (
         <div className="gp-row">
           <p className="gp-text">
-            {v.lastKilled ? <>지난밤 <b>{m.name(v.lastKilled)}</b>님이 제외되었습니다. </> : '지난밤 아무도 제외되지 않았습니다. '}
+            {v.day === 1 ? '첫날입니다. 대화로 서로를 살펴보세요. ' : v.lastKilled ? <>지난밤 <b>{m.name(v.lastKilled)}</b>님이 제외되었습니다. </> : '지난밤 아무도 제외되지 않았습니다. '}
             채팅으로 의심 가는 사람을 이야기하세요.
           </p>
           {m.isHost && (
@@ -216,13 +217,10 @@ export function WordchainBlock({ m, toast }: P) {
           </span>
         ))}
       </div>
+      <WordChallenge m={m} toast={toast} />
       <p className="gp-muted gp-note">
-        사전 검증 없이 형식(완성형 한글 2~8자, 끝 글자, 중복)만 확인합니다. 단어가 아니면 호스트가 무효 처리할 수 있습니다.
-        {m.isHost && v.canReject && (
-          <button type="button" className="gp-link" onClick={() => void run(gameAction({ type: 'word.reject' }), toast)}>
-            직전 단어 무효 처리
-          </button>
-        )}
+        간편 모드: 사전이 없어 형식(완성형 한글 2~8자, 끝 글자, 중복)만 확인합니다.
+        {v.order.length - v.out.length >= 3 ? ' 이상한 단어는 5초 안에 이의를 제기하면 생존자 과반 찬성으로 무효 처리됩니다.' : ' 2명일 때는 이의 제기를 쓸 수 없습니다.'}
       </p>
       {v.stage === 'result' && v.result && (
         <div className="gp-result">
@@ -233,6 +231,44 @@ export function WordchainBlock({ m, toast }: P) {
         </div>
       )}
       <StopLink m={m} toast={toast} />
+    </div>
+  )
+}
+
+function WordChallenge({ m, toast }: P) {
+  const v = m.wordchain!
+  const now = useServerNow()
+  const c = v.challenge
+  const last = v.chain[v.chain.length - 1]
+  const me = m.snap.meId
+  if (c) {
+    const t = m.task.kind === 'word.challengeVote' ? m.task : null
+    return (
+      <div className="gp-reply-box">
+        <p className="gp-text">
+          {m.name(c.byId)}님이 <b>{m.name(c.authorId)}</b>님의 단어 '<b>{c.word}</b>'에 이의를 제기했습니다. 실제로 없는 단어인가요?
+          <span className="gp-muted"> · 무효 {c.needed}표 필요 · {c.votedIds.length}/{c.voters.length}명 투표</span>
+        </p>
+        {t ? (
+          <div className="gp-actions">
+            <button type="button" className="gp-btn primary" onClick={() => void run(gameAction({ type: 'word.challengeVote', agree: true }), toast)}>무효 (없는 단어)</button>
+            <button type="button" className="gp-btn" onClick={() => void run(gameAction({ type: 'word.challengeVote', agree: false }), toast)}>인정</button>
+            <Timer deadline={c.deadline} />
+          </div>
+        ) : (
+          <p className="gp-muted">{c.authorId === me ? '내 단어에 대한 투표입니다. 결과를 기다리세요.' : c.myVote !== undefined ? '투표했습니다. 결과를 기다리는 중입니다.' : '관전 중'}</p>
+        )}
+      </div>
+    )
+  }
+  const canChallenge =
+    v.stage === 'turn' && v.challengeUntil !== null && now < v.challengeUntil && !!last.playerId && last.playerId !== me && !v.out.includes(me) && v.order.includes(me)
+  if (!canChallenge) return null
+  return (
+    <div className="gp-actions">
+      <button type="button" className="gp-btn" onClick={() => void run(gameAction({ type: 'word.challenge' }), toast)}>
+        '{last.word}' 이의 제기 · {Math.max(0, Math.ceil((v.challengeUntil! - now) / 1000))}초
+      </button>
     </div>
   )
 }
@@ -303,31 +339,54 @@ export function BaseballBlock({ m, toast }: P) {
 
 /* ───────────── 스무고개 ───────────── */
 
-function TwentySetup({ toast, deadline }: { toast(s: string): void; deadline: number | null }) {
+function TwentySetup({ toast, task }: { toast(s: string): void; task: Extract<SessionModel['task'], { kind: 'twenty.setup' }> }) {
   const [answer, setAnswer] = useState('')
   const [category, setCategory] = useState('사물')
-  const left = useRemaining(deadline)
+  const [custom, setCustom] = useState(false)
+  const left = useRemaining(task.deadline)
   return (
-    <form
-      className="gp-form"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (answer.trim()) void run(gameAction({ type: 'twenty.setup', answer: answer.trim(), category: category.trim() || '기타' }), toast)
-      }}
-    >
-      <label>
-        <span>정답 (다른 사람에게 보이지 않음)</span>
-        <input className="gp-input" value={answer} maxLength={30} onChange={(e) => setAnswer(e.target.value)} placeholder="예: 냉장고" autoFocus />
-      </label>
-      <label>
-        <span>분류 (공개)</span>
-        <input className="gp-input" value={category} maxLength={20} onChange={(e) => setCategory(e.target.value)} placeholder="예: 사물" />
-      </label>
-      <div className="gp-form-actions">
-        <span className="gp-muted">{fmtClock(left)} 안에 정하지 않으면 자동으로 출제됩니다</span>
-        <button type="submit" className="gp-btn primary" disabled={!answer.trim()}>출제</button>
+    <div className="gp-form">
+      <div className="gp-options" role="radiogroup">
+        {task.options.map((o) => (
+          <button key={o.id} type="button" className="gp-option" onClick={() => void run(gameAction({ type: 'twenty.setup', optionId: o.id }), toast)}>
+            <span className="gp-radio" />
+            <b>{o.answer}</b>
+            <span className="gp-muted"> · {o.category}</span>
+          </button>
+        ))}
       </div>
-    </form>
+      <div className="gp-form-actions">
+        <span className="gp-muted">눌러서 바로 출제 · {fmtClock(left)} 안에 고르지 않으면 첫 번째 후보로 출제됩니다</span>
+        <button type="button" className="gp-btn" disabled={task.rerollsLeft <= 0} onClick={() => void run(gameAction({ type: 'twenty.reroll' }), toast)}>
+          다시 뽑기 ({task.rerollsLeft})
+        </button>
+        {task.freeInput && !custom && (
+          <button type="button" className="gp-btn" onClick={() => setCustom(true)}>직접 입력</button>
+        )}
+      </div>
+      {custom && (
+        <form
+          className="gp-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (answer.trim()) void run(gameAction({ type: 'twenty.setup', answer: answer.trim(), category: category.trim() || '기타' }), toast)
+          }}
+        >
+          <label>
+            <span>정답 (다른 사람에게 보이지 않음)</span>
+            <input className="gp-input" value={answer} maxLength={30} onChange={(e) => setAnswer(e.target.value)} placeholder="예: 냉장고" autoFocus />
+          </label>
+          <label>
+            <span>분류 (공개)</span>
+            <input className="gp-input" value={category} maxLength={20} onChange={(e) => setCategory(e.target.value)} placeholder="예: 사물" />
+          </label>
+          <div className="gp-form-actions">
+            <span className="gp-muted">직접 입력한 정답은 철자가 정확히 같아야 정답으로 인정됩니다</span>
+            <button type="submit" className="gp-btn primary" disabled={!answer.trim()}>출제</button>
+          </div>
+        </form>
+      )}
+    </div>
   )
 }
 
@@ -339,7 +398,7 @@ export function TwentyBlock({ m, toast }: P) {
     <div className="gp">
       <div className="gp-title">
         <span>{m.meta.workTitle}</span>
-        <span className="gp-sub">출제자 {m.name(v.setterId)}{v.category ? ` · 분류 ${v.category}` : ''} · 질문 {used}/{v.maxQuestions}</span>
+        <span className="gp-sub">출제자 {m.name(v.setterId)}{v.category ? ` · 분류 ${v.category}` : ''} · 질문 {used}/{v.maxQuestions}{v.endsAt ? <> · 전체 <TotalLeft at={v.endsAt} /></> : null}</span>
         {v.stage !== 'result' && v.deadline && <Timer deadline={v.deadline} />}
       </div>
 
@@ -353,8 +412,8 @@ export function TwentyBlock({ m, toast }: P) {
       {v.stage === 'setup' &&
         (t.kind === 'twenty.setup' ? (
           <>
-            <p className="gp-text">이번 라운드 <b>출제자</b>입니다. 정답과 분류를 정하세요.</p>
-            <TwentySetup toast={toast} deadline={t.deadline} />
+            <p className="gp-text">이번 라운드 <b>출제자</b>입니다. 아래 후보 중 정답을 하나 고르세요. 다른 사람에게는 분류만 공개됩니다.</p>
+            <TwentySetup toast={toast} task={t} />
           </>
         ) : (
           <p className="gp-text gp-status"><Loader2 size={14} className="spin" /> {m.name(v.setterId)}님이 문제를 정하고 있습니다.</p>
@@ -363,12 +422,13 @@ export function TwentyBlock({ m, toast }: P) {
       {v.questions.length > 0 && (
         <ol className="gp-qlist">
           {v.questions.map((q) => (
-            <li key={q.id} className={q.kind === 'guess' ? 'guess' : ''}>
+            <li key={q.id} className={q.kind === 'guess' ? 'guess' : q.kind === 'pass' ? 'pass' : ''}>
               <span className="gp-q">
-                <em>{m.name(q.askerId)}</em> {q.kind === 'guess' ? <>정답 도전: <b>{q.text}</b></> : q.text}
+                <em>{m.name(q.askerId)}</em>{' '}
+                {q.kind === 'guess' ? <>정답 도전{q.text ? <>: <b>{q.text}</b></> : null}</> : q.kind === 'pass' ? <span className="gp-muted">시간 초과로 차례 넘김</span> : q.text}
               </span>
-              <span className={`gp-reply ${q.reply ?? 'pending'}`}>
-                {q.kind === 'guess' ? (q.correct ? '정답' : '오답') : q.reply ? REPLY_LABEL[q.reply] : '답변 대기'}
+              <span className={`gp-reply ${q.kind === 'pass' ? 'maybe' : (q.reply ?? 'pending')}`}>
+                {q.kind === 'guess' ? (q.correct ? '정답' : '실패') : q.kind === 'pass' ? '—' : q.reply ? REPLY_LABEL[q.reply] : '답변 대기'}
               </span>
             </li>
           ))}
@@ -398,7 +458,9 @@ export function TwentyBlock({ m, toast }: P) {
           {v.myRole === 'guesser'
             ? v.pendingId
               ? '출제자의 답변을 기다리는 중입니다.'
-              : `아래 입력창에서 질문하거나 정답에 도전하세요 (최대 ${LIMITS.guessMax}자). 정답 도전도 질문 1회를 씁니다.`
+              : t.kind === 'twenty.ask'
+                ? `내 차례입니다. 아래 입력창에서 예/아니오 질문을 하거나 정답에 도전하세요 (정답 최대 ${LIMITS.guessMax}자). 둘 다 1회를 씁니다.`
+                : `${m.name(v.turnId)}님이 질문할 차례입니다.`
             : v.myRole === 'setter'
               ? '질문이 오면 여기에서 답합니다.'
               : '관전 중'}
@@ -409,7 +471,7 @@ export function TwentyBlock({ m, toast }: P) {
         <div className="gp-result">
           <p className="gp-text">
             <strong>{TWENTY_WINNER[v.result.winner]}</strong> — 정답은 <b>{v.result.answer}</b>
-            {v.result.solverId ? ` · ${m.name(v.result.solverId)}님이 ${used}번째에 맞혔습니다` : ''}
+            {v.result.solverId ? ` · ${m.name(v.result.solverId)}님이 ${used}번째에 맞혔습니다` : ` · ${v.result.reason}`}
           </p>
           <AfterResult m={m} toast={toast} />
         </div>
@@ -417,4 +479,9 @@ export function TwentyBlock({ m, toast }: P) {
       <StopLink m={m} toast={toast} />
     </div>
   )
+}
+
+function TotalLeft({ at }: { at: number }) {
+  const left = useRemaining(at)
+  return <>{fmtClock(left)} 남음</>
 }

@@ -25,16 +25,24 @@ import { useSession } from '../stores/session'
 export type Task =
   | { kind: 'none' }
   | { kind: 'liar.describe'; deadline: number | null }
-  | { kind: 'liar.vote'; options: PlayerInfo[]; myVote: string | null; deadline: number | null; revote: boolean }
+  /** myVote: undefined = 아직, null = 기권 */
+  | { kind: 'liar.vote'; options: PlayerInfo[]; myVote: string | null | undefined; deadline: number | null; revote: boolean }
   | { kind: 'liar.guess'; deadline: number | null }
   | { kind: 'quiz.answer'; choices: string[]; myAnswer: number | null; deadline: number | null }
   | { kind: 'mafia.kill'; options: PlayerInfo[]; myPick: string | null; deadline: number | null }
   | { kind: 'mafia.vote'; options: PlayerInfo[]; deadline: number | null }
   | { kind: 'word.submit'; allowed: string[]; deadline: number | null }
+  | { kind: 'word.challengeVote'; word: string; author: string; by: string; needed: number; myVote: boolean | undefined; deadline: number }
   | { kind: 'baseball.guess'; digits: number; deadline: number | null }
-  | { kind: 'twenty.setup'; deadline: number | null }
+  | {
+      kind: 'twenty.setup'
+      deadline: number | null
+      options: { id: string; answer: string; category: string }[]
+      rerollsLeft: number
+      freeInput: boolean
+    }
   | { kind: 'twenty.reply'; question: string; questionId: string; deadline: number | null }
-  | { kind: 'twenty.ask' }
+  | { kind: 'twenty.ask'; deadline: number | null }
 
 export interface SessionModel {
   snap: RoomSnapshot
@@ -56,6 +64,8 @@ export interface SessionModel {
   task: Task
   name(id: string | null | undefined): string
   settingsSummary: string
+  /** 진행 중인 판에서 빠져 있음(관전·사망·탈락) → 내 채팅은 같은 처지끼리만 보인다 */
+  amOut: boolean
 }
 
 export function buildModel(snap: RoomSnapshot): SessionModel {
@@ -94,26 +104,32 @@ export function buildModel(snap: RoomSnapshot): SessionModel {
     else if (mafia.stage === 'vote' && mafia.myVote === undefined)
       task = { kind: 'mafia.vote', options: mafia.alive.filter((id) => id !== me_).map(info), deadline: mafia.deadline }
   }
-  if (snap.phase === 'PLAYING' && wordchain?.stage === 'turn' && wordchain.currentTurnId === me_)
-    task = { kind: 'word.submit', allowed: wordchain.allowed, deadline: wordchain.deadline }
+  if (snap.phase === 'PLAYING' && wordchain?.stage === 'turn') {
+    const c = wordchain.challenge
+    if (c && c.voters.includes(me_) && c.myVote === undefined)
+      task = { kind: 'word.challengeVote', word: c.word, author: name(c.authorId), by: name(c.byId), needed: c.needed, myVote: c.myVote, deadline: c.deadline }
+    else if (!c && wordchain.currentTurnId === me_) task = { kind: 'word.submit', allowed: wordchain.allowed, deadline: wordchain.deadline }
+  }
   if (snap.phase === 'PLAYING' && baseball?.stage === 'guess' && baseball.participants.includes(me_) && !baseball.myGuess)
     task = { kind: 'baseball.guess', digits: baseball.digits, deadline: baseball.deadline }
   if (snap.phase === 'PLAYING' && twenty) {
-    if (twenty.stage === 'setup' && twenty.myRole === 'setter') task = { kind: 'twenty.setup', deadline: twenty.deadline }
+    if (twenty.stage === 'setup' && twenty.myRole === 'setter')
+      task = { kind: 'twenty.setup', deadline: twenty.deadline, options: twenty.options ?? [], rerollsLeft: twenty.rerollsLeft, freeInput: twenty.freeInput }
     else if (twenty.stage === 'asking' && twenty.myRole === 'setter' && twenty.pendingId) {
       const q = twenty.questions.find((x) => x.id === twenty.pendingId)
       if (q) task = { kind: 'twenty.reply', question: q.text, questionId: q.id, deadline: twenty.deadline }
-    } else if (twenty.stage === 'asking' && twenty.myRole === 'guesser' && !twenty.pendingId) task = { kind: 'twenty.ask' }
+    } else if (twenty.stage === 'asking' && twenty.myRole === 'guesser' && !twenty.pendingId && twenty.turnId === me_)
+      task = { kind: 'twenty.ask', deadline: twenty.deadline }
   }
 
   const s = snap.settings
   const settingsSummary = {
     liar: `카테고리 ${LIAR_CATEGORY_LABEL[s.liar.category]} · 설명 ${s.liar.describeSeconds}초 · 토론 ${s.liar.discussSeconds}초`,
     quiz: `분야 ${QUIZ_CATEGORY_LABEL[s.quiz.category]} · ${s.quiz.questionCount}문항 · 문항당 ${s.quiz.seconds}초`,
-    mafia: `밤 ${s.mafia.nightSeconds}초 · 낮 토론 ${s.mafia.discussSeconds}초 · 시민/마피아`,
-    wordchain: `차례당 ${s.wordchain.turnSeconds}초 · 두음법칙 허용`,
+    mafia: `낮 토론 ${s.mafia.discussSeconds}초 · 투표 ${s.mafia.voteSeconds}초 · 밤 ${s.mafia.nightSeconds}초 · 최대 8일`,
+    wordchain: `차례당 ${s.wordchain.turnSeconds}초 · 두음법칙 허용 · 간편 모드(사전 없음)`,
     baseball: `${s.baseball.digits}자리 · 최대 ${s.baseball.maxRounds}턴 · 턴당 ${s.baseball.roundSeconds}초`,
-    twenty: `질문 ${s.twenty.maxQuestions}개 · 출제자 무작위`,
+    twenty: `질문 ${s.twenty.maxQuestions}개 · 출제자 무작위 · ${s.twenty.freeInput ? '정답 직접 입력' : '정답 은행에서 고르기'}`,
   }[snap.gameType]
 
   return {
@@ -135,6 +151,11 @@ export function buildModel(snap: RoomSnapshot): SessionModel {
     task,
     name,
     settingsSummary,
+    amOut:
+      snap.phase === 'PLAYING' &&
+      (!!me?.spectator ||
+        (!!mafia && mafia.players.includes(snap.meId) && !mafia.alive.includes(snap.meId)) ||
+        (!!wordchain && wordchain.out.includes(snap.meId))),
   }
 }
 
@@ -183,10 +204,10 @@ export function needsAttention(m: SessionModel | null) {
   if (!m) return false
   const t = m.task
   if (t.kind === 'liar.describe' || t.kind === 'liar.guess') return true
-  if (t.kind === 'liar.vote') return !t.myVote
+  if (t.kind === 'liar.vote') return t.myVote === undefined
   if (t.kind === 'quiz.answer') return t.myAnswer === null
   if (t.kind === 'mafia.kill') return !t.myPick
-  return t.kind !== 'twenty.ask'
+  return t.kind !== 'none'
 }
 
 export const LIAR_STEPS = [
@@ -212,7 +233,7 @@ export function liarStepIndex(v: LiarView) {
   }
 }
 
-export const WINNER_LABEL = { liar: '라이어 승리', citizens: '참여자 승리', none: '무효' } as const
-export const MAFIA_WINNER = { mafia: '마피아 승리', citizens: '시민 승리', none: '무효' } as const
-export const TWENTY_WINNER = { guessers: '질문자 승리', setter: '출제자 승리', none: '무효' } as const
+export const WINNER_LABEL = { liar: '라이어 승리', citizens: '참여자 승리', none: '중단' } as const
+export const MAFIA_WINNER = { mafia: '마피아 승리', citizens: '시민 승리', none: '중단' } as const
+export const TWENTY_WINNER = { guessers: '질문자 승리', setter: '출제자 승리', none: '중단' } as const
 export const REPLY_LABEL = { yes: '예', no: '아니오', maybe: '애매함' } as const

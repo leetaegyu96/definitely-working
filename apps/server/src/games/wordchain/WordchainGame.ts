@@ -1,12 +1,18 @@
 import type { GameAction, WordchainSettings, WordchainView } from '@relay/shared'
+import { START_WORDS } from '../../content/index.js'
 import { fail, ok, shuffle, type ActionResult, type GameContext, type GameEngine } from '../types.js'
 
 /**
  * 끝말잇기.
- * 검증 한계: 내장 사전이 없어 "완성형 한글 2~8자 · 끝 글자 일치 · 중복 금지"만 서버가 검사한다.
- * 실제 단어가 아닌 경우 호스트가 직전 단어를 무효 처리(탈락)할 수 있다.
+ * 간편 모드: 내장 사전이 없어 "완성형 한글 2~8자 · 끝 글자 일치 · 중복 금지"만 서버가 검사한다.
+ * 실제 단어가 아니면 3명 이상일 때 직전 단어에 이의를 제기해 생존자 과반 찬성으로 무효(낸 사람 탈락) 처리한다.
  */
-export const START_WORDS = ['기차', '사과', '바다', '나무', '하늘', '구름', '연필', '시계', '노트북', '자전거', '도서관', '고양이', '컴퓨터', '우산', '김밥', '라디오']
+export { START_WORDS }
+
+/** 단어가 나온 뒤 이의 제기를 받는 시간 */
+export const CHALLENGE_WINDOW_MS = 5_000
+/** 이의 제기 투표 시간 */
+export const CHALLENGE_VOTE_MS = 10_000
 
 const HANGUL_BASE = 0xac00
 const JUNG = 21
@@ -49,9 +55,22 @@ export class WordchainGame implements GameEngine {
   private out: string[] = []
   private turn = 0
   private chain: { playerId: string | null; word: string }[] = []
-  private deadline: number | null = null
+  deadline: number | null = null
   private result: WordchainView['result'] = null
   private cancel: (() => void) | null = null
+  /** 직전 단어에 이의를 제기할 수 있는 마감 시각 */
+  private challengeUntil: number | null = null
+  private challenge: {
+    byId: string
+    authorId: string
+    word: string
+    voters: string[]
+    votes: Map<string, boolean>
+    deadline: number
+    /** 투표 동안 멈춘 차례의 남은 시간 */
+    pausedMs: number
+    cancel: () => void
+  } | null = null
 
   constructor(private ctx: GameContext<WordchainSettings>) {}
 
@@ -60,7 +79,7 @@ export class WordchainGame implements GameEngine {
       this.ctx.participants.map((p) => p.id),
       this.ctx.random,
     )
-    const first = START_WORDS[Math.floor(this.ctx.random() * START_WORDS.length)]
+    const first = this.ctx.pickFresh('wordchain:start', START_WORDS.map((w) => ({ id: w })), 1)[0].id
     this.chain.push({ playerId: null, word: first })
     this.ctx.emit({ code: 'game_started', game: 'wordchain', round: this.ctx.round })
     this.ctx.emit({ code: 'word_played', name: '시작 단어', word: first })
@@ -69,6 +88,7 @@ export class WordchainGame implements GameEngine {
 
   dispose() {
     this.cancel?.()
+    this.challenge?.cancel()
   }
 
   private name(id: string | null) {
@@ -84,19 +104,22 @@ export class WordchainGame implements GameEngine {
     return allowedStarts(last[last.length - 1])
   }
 
+  private setTurnTimer(ms: number) {
+    const id = this.order[this.turn]
+    this.cancel?.()
+    this.deadline = this.ctx.now() + ms
+    this.cancel = this.ctx.setTimer(ms, () => {
+      this.cancel = null
+      this.eliminate(id, 'timeout')
+    })
+  }
+
   private beginTurn(index: number) {
     const alive = this.alive()
     if (alive.length <= 1) return this.finish(alive[0] ?? null)
     this.turn = ((index % this.order.length) + this.order.length) % this.order.length
     while (this.out.includes(this.order[this.turn])) this.turn = (this.turn + 1) % this.order.length
-    const id = this.order[this.turn]
-    const secs = this.ctx.isConnected(id) ? this.ctx.settings.turnSeconds : 5
-    this.cancel?.()
-    this.deadline = this.ctx.now() + secs * 1000
-    this.cancel = this.ctx.setTimer(secs * 1000, () => {
-      this.cancel = null
-      this.eliminate(id, 'timeout')
-    })
+    this.setTurnTimer(this.ctx.settings.turnSeconds * 1000)
     this.ctx.changed()
   }
 
@@ -104,12 +127,17 @@ export class WordchainGame implements GameEngine {
     if (this.out.includes(id)) return
     this.out.push(id)
     this.ctx.emit({ code: 'word_out', name: this.name(id), reason })
+    if (this.challenge && (this.challenge.authorId === id || this.alive().length < 3)) this.cancelChallenge()
+    if (this.challengeUntil && this.alive().length < 3) this.challengeUntil = null
     const idx = this.order.indexOf(id)
     this.beginTurn(idx + 1)
   }
 
   private finish(winnerId: string | null) {
     this.cancel?.()
+    this.challenge?.cancel()
+    this.challenge = null
+    this.challengeUntil = null
     this.stage = 'result'
     this.deadline = null
     this.result = { winnerId }
@@ -118,11 +146,81 @@ export class WordchainGame implements GameEngine {
     this.ctx.changed()
   }
 
-  action(playerId: string, action: GameAction, opts: { isHost: boolean }): ActionResult {
+  /* ── 이의 제기 ── */
+
+  private needed(voters: number) {
+    return Math.floor(voters / 2) + 1
+  }
+
+  private startChallenge(byId: string) {
+    const last = this.chain[this.chain.length - 1]
+    const authorId = last.playerId!
+    const voters = this.alive().filter((id) => id !== authorId)
+    // 차례 타이머를 멈춘다
+    const pausedMs = Math.max(0, (this.deadline ?? this.ctx.now()) - this.ctx.now())
+    this.cancel?.()
+    this.cancel = null
+    this.challengeUntil = null
+    const deadline = this.ctx.now() + CHALLENGE_VOTE_MS
+    this.challenge = {
+      byId,
+      authorId,
+      word: last.word,
+      voters,
+      votes: new Map([[byId, true]]),
+      deadline,
+      pausedMs,
+      cancel: this.ctx.setTimer(CHALLENGE_VOTE_MS, () => this.resolveChallenge()),
+    }
+    this.deadline = deadline
+    this.ctx.emit({ code: 'word_challenge', by: this.name(byId), word: last.word, author: this.name(authorId), seconds: CHALLENGE_VOTE_MS / 1000 })
+    this.checkChallenge()
+  }
+
+  private checkChallenge() {
+    const c = this.challenge
+    if (!c) return
+    const yes = [...c.votes.values()].filter(Boolean).length
+    const pending = c.voters.filter((v) => !c.votes.has(v) && this.ctx.isConnected(v) && !this.out.includes(v)).length
+    const need = this.needed(c.voters.length)
+    if (yes >= need || yes + pending < need || pending === 0) return this.resolveChallenge()
+    this.ctx.changed()
+  }
+
+  private cancelChallenge() {
+    const c = this.challenge
+    if (!c) return
+    c.cancel()
+    this.challenge = null
+  }
+
+  private resolveChallenge() {
+    const c = this.challenge
+    if (!c) return
+    c.cancel()
+    this.challenge = null
+    const yes = [...c.votes.values()].filter(Boolean).length
+    const need = this.needed(c.voters.length)
+    const upheld = yes >= need
+    this.ctx.emit({ code: 'word_challenge_result', word: c.word, upheld, yes, needed: need })
+    if (upheld) {
+      this.chain.pop()
+      return this.eliminate(c.authorId, 'rejected')
+    }
+    // 기각: 멈췄던 차례를 이어서 (최소 5초)
+    this.setTurnTimer(Math.max(5_000, c.pausedMs))
+    this.ctx.changed()
+  }
+
+  /* ── actions ── */
+
+  action(playerId: string, action: GameAction): ActionResult {
     if (this.stage !== 'turn') return fail('BAD_STATE', '진행 중이 아닙니다')
+    const alive = this.alive().includes(playerId)
     if (action.type === 'word.submit') {
+      if (this.challenge) return fail('BAD_STATE', '이의 제기 투표가 끝난 뒤 입력하세요')
       if (this.order[this.turn] !== playerId) return fail('FORBIDDEN', '내 차례가 아닙니다')
-      const word = action.word.replace(/\s+/g, '')
+      const word = action.word.normalize('NFC').replace(/\s+/g, '')
       const bad = validateWordFormat(word)
       if (bad) return fail('INVALID', bad)
       const allowed = this.allowed()
@@ -130,33 +228,62 @@ export class WordchainGame implements GameEngine {
       if (this.chain.some((c) => c.word === word)) return fail('INVALID', '이미 나온 단어입니다')
       this.chain.push({ playerId, word })
       this.ctx.emit({ code: 'word_played', name: this.name(playerId), word })
+      this.challengeUntil = this.alive().length >= 3 ? this.ctx.now() + CHALLENGE_WINDOW_MS : null
       this.beginTurn(this.turn + 1)
       return ok
     }
-    if (action.type === 'word.reject') {
-      if (!opts.isHost) return fail('FORBIDDEN', '세션 호스트만 무효 처리할 수 있습니다')
+    if (action.type === 'word.challenge') {
       const last = this.chain[this.chain.length - 1]
-      if (!last.playerId) return fail('BAD_STATE', '무효 처리할 단어가 없습니다')
-      this.chain.pop()
-      this.eliminate(last.playerId, 'rejected')
+      if (!alive) return fail('FORBIDDEN', '생존한 참가자만 이의를 제기할 수 있습니다')
+      if (this.challenge) return fail('BAD_STATE', '이미 투표 중입니다')
+      if (!last.playerId || this.challengeUntil === null || this.ctx.now() > this.challengeUntil)
+        return fail('BAD_STATE', '이의 제기 시간이 지났습니다')
+      if (last.playerId === playerId) return fail('FORBIDDEN', '내가 낸 단어에는 이의를 제기할 수 없습니다')
+      if (this.alive().length < 3) return fail('BAD_STATE', '3명 이상일 때만 이의를 제기할 수 있습니다')
+      this.startChallenge(playerId)
+      return ok
+    }
+    if (action.type === 'word.challengeVote') {
+      const c = this.challenge
+      if (!c) return fail('BAD_STATE', '진행 중인 이의 제기 투표가 없습니다')
+      if (!c.voters.includes(playerId) || !alive) return fail('FORBIDDEN', '투표 대상이 아닙니다')
+      if (c.votes.has(playerId)) return fail('BAD_STATE', '이미 투표했습니다')
+      c.votes.set(playerId, action.agree)
+      this.checkChallenge()
       return ok
     }
     return fail('INVALID', '지원하지 않는 동작입니다')
   }
 
-  playerLeft(playerId: string) {
-    if (!this.order.includes(playerId) || this.stage === 'result') return
-    if (this.order[this.turn] === playerId) return this.eliminate(playerId, 'left')
-    if (!this.out.includes(playerId)) {
-      this.out.push(playerId)
-      this.ctx.emit({ code: 'word_out', name: this.name(playerId), reason: 'left' })
-    }
+  isOut(playerId: string) {
+    return this.out.includes(playerId) && this.stage !== 'result'
+  }
+
+  /** 연결이 끊긴 채 유예 시간이 지나면 탈락 */
+  playerGone(playerId: string) {
+    if (!this.order.includes(playerId) || this.stage === 'result' || this.out.includes(playerId)) return
+    if (this.order[this.turn] === playerId && !this.challenge) return this.eliminate(playerId, 'left')
+    this.out.push(playerId)
+    this.ctx.emit({ code: 'word_out', name: this.name(playerId), reason: 'left' })
     if (this.alive().length <= 1) return this.finish(this.alive()[0] ?? null)
+    if (this.challenge) {
+      if (this.challenge.authorId === playerId || this.alive().length < 3) {
+        const paused = this.challenge.pausedMs
+        this.cancelChallenge()
+        if (this.order[this.turn] === playerId) return this.beginTurn(this.turn + 1)
+        this.setTurnTimer(Math.max(5_000, paused))
+      } else this.checkChallenge()
+    }
+    if (this.order[this.turn] === playerId) return this.beginTurn(this.turn + 1)
     this.ctx.changed()
   }
 
-  view(): WordchainView {
-    const last = this.chain[this.chain.length - 1]
+  playerLeft(playerId: string) {
+    this.playerGone(playerId)
+  }
+
+  view(playerId: string | null = null): WordchainView {
+    const c = this.challenge
     return {
       type: 'wordchain',
       round: this.ctx.round,
@@ -167,7 +294,19 @@ export class WordchainGame implements GameEngine {
       chain: this.chain.slice(),
       allowed: this.allowed(),
       deadline: this.stage === 'turn' ? this.deadline : null,
-      canReject: this.stage === 'turn' && !!last.playerId,
+      challengeUntil: this.stage === 'turn' && !c ? this.challengeUntil : null,
+      challenge: c
+        ? {
+            byId: c.byId,
+            authorId: c.authorId,
+            word: c.word,
+            voters: c.voters.slice(),
+            votedIds: [...c.votes.keys()],
+            myVote: playerId ? c.votes.get(playerId) : undefined,
+            needed: this.needed(c.voters.length),
+            deadline: c.deadline,
+          }
+        : null,
       result: this.result,
     }
   }

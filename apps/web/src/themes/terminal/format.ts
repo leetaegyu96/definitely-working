@@ -20,7 +20,7 @@ export function nameColor(name: string) {
   return NAME_COLORS[h % NAME_COLORS.length]
 }
 
-const WIN = { liar: 'liar wins', citizens: 'reviewers win', none: 'void round' } as const
+const WIN = { liar: 'liar wins', citizens: 'reviewers win', none: 'stopped' } as const
 
 let seq = 0
 const t = (text: string, cls?: string): Seg => ({ t: text, cls })
@@ -62,8 +62,8 @@ function privateLines(ts: number, live: RoomSnapshot | null, round: number): TLi
   if (g.type === 'baseball') return [tree(ts, [dim(`guess ${g.digits} distinct digits · max ${g.maxTurns} turns · type digits on each turn`)])]
   if (g.type === 'twenty') {
     const setter = snap!.players.find((p) => p.id === g.setterId)?.name ?? '?'
-    if (g.myRole === 'setter') return [tree(ts, [t('you are the '), t('setter', 't-bold t-yellow'), dim(' — /setup <answer> <category>, then /reply y|n|m')])]
-    return [tree(ts, [dim(`setter: ${setter} · type a yes/no question, /guess <answer> to solve`)])]
+    if (g.myRole === 'setter') return [tree(ts, [t('you are the '), t('setter', 't-bold t-yellow'), dim(' — pick an answer from the list, then reply y|n|m to each question')])]
+    return [tree(ts, [dim(`setter: ${setter} · questions go in turns · on your turn type a yes/no question or /guess <answer>`)])]
   }
   const q = g as QuizView
   return [tree(ts, [dim(`${q.total} questions · category ${q.category} · ${snap!.settings.quiz.seconds}s each`)])]
@@ -75,14 +75,15 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
   for (const m of msgs) {
     const ts = m.ts
     if (m.type === 'chat') {
-      const head: Seg[] = m.authorId === me ? [dim('> ')] : [{ t: m.authorName, cls: `${nameColor(m.authorName)} t-bold` }, dim(' › ')]
+      const tag: Seg[] = m.scope === 'out' ? [dim('[spectators] ')] : []
+      const head: Seg[] = m.authorId === me ? [dim('> '), ...tag] : [...tag, { t: m.authorName, cls: `${nameColor(m.authorName)} t-bold` }, dim(' › ')]
       if (m.image || m.imageExpired) {
         const meta = m.image ? `[image ${m.image.w}×${m.image.h} · ${Math.round((m.image.dataUrl.length * 3) / 4 / 1024)}KB]` : '[image expired]'
         out.push(L(ts, [...head, dim(meta), ...(m.text ? [{ t: ' ' + m.text }] : [])], m.authorId === me ? 'tl-user' : undefined))
         if (m.image) out.push({ ...L(ts, []), img: { src: m.image.dataUrl, w: m.image.w, h: m.image.h }, cls: 'tl-img' })
         continue
       }
-      if (m.authorId === me) out.push(L(ts, [dim('> '), { t: m.text }], 'tl-user'))
+      if (m.authorId === me) out.push(L(ts, [...head, { t: m.text }], 'tl-user'))
       else out.push(L(ts, [...head, { t: m.text }]))
       continue
     }
@@ -127,6 +128,9 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
       case 'liar_vote_open':
         out.push(L(ts, [{ t: '● ', cls: 't-accent' }, { t: e.revote ? 'Re-vote (tie)' : 'Vote: who is the liar?' }, dim(`  candidates: ${e.candidates.join(', ')}`)]))
         break
+      case 'liar_no_accused':
+        out.push(tree(ts, [dim(e.revote ? 'run-off tied again — the liar could not be identified' : 'nobody was accused — the liar could not be identified')]))
+        break
       case 'liar_accused':
         out.push(tree(ts, [{ t: e.name, cls: 't-bold' }, { t: ` accused with ${e.votes} vote${e.votes > 1 ? 's' : ''}` }]))
         break
@@ -148,7 +152,13 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
         break
       case 'quiz_result':
         out.push(L(ts, [{ t: '● ', cls: 't-green' }, { t: 'Final ranking', cls: 't-bold' }]))
-        e.ranking.forEach((r, i) => out.push(L(ts, [dim(`  ${String(i + 1).padStart(2)}. `), { t: r.name }, dim('  '), { t: `${r.score}`, cls: 't-yellow' }])))
+        e.ranking.forEach((r) => out.push(L(ts, [dim(`  ${String(r.rank).padStart(2)}. `), { t: r.name }, dim('  '), { t: `${r.score}`, cls: 't-yellow' }])))
+        break
+      case 'mafia_day':
+        out.push(L(ts, [t('● ', 't-accent'), t(`Day ${e.day}/${e.maxDays}`, 't-bold'), dim(' — discussion')]))
+        break
+      case 'mafia_gone':
+        out.push(tree(ts, [t(e.name, 't-bold'), dim(' disconnected and was removed')]))
         break
       case 'mafia_night':
         out.push(L(ts, [t('● ', 't-accent'), t(`Night ${e.day}`, 't-bold'), dim(' — mafia is choosing a target')]))
@@ -163,7 +173,7 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
         out.push(tree(ts, e.name ? [t(e.name, 't-bold'), t(` voted out (${e.votes})`)] : [dim('tie or abstain — nobody voted out')]))
         break
       case 'mafia_result':
-        out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winner === 'mafia' ? 'mafia wins' : e.winner === 'citizens' ? 'citizens win' : 'void'}`, 't-bold')]))
+        out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winner === 'mafia' ? 'mafia wins' : e.winner === 'citizens' ? 'citizens win' : 'stopped'}`, 't-bold')]))
         out.push(L(ts, [dim('  mafia    '), t(e.mafiaNames.join(', '))]))
         out.push(L(ts, [dim(`  ${e.reason}`)]))
         break
@@ -171,7 +181,13 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
         out.push(tree(ts, [t(e.name, e.name === '시작 단어' ? 't-dim' : nameColor(e.name)), dim(': '), t(e.word, 't-bold')]))
         break
       case 'word_out':
-        out.push(tree(ts, [t(e.name, 't-red'), dim(` out (${e.reason === 'timeout' ? 'timed out' : e.reason === 'rejected' ? 'word rejected by host' : 'left'})`)]))
+        out.push(tree(ts, [t(e.name, 't-red'), dim(` out (${e.reason === 'timeout' ? 'timed out' : e.reason === 'rejected' ? 'word voided by challenge' : 'disconnected'})`)]))
+        break
+      case 'word_challenge':
+        out.push(L(ts, [t('● ', 't-yellow'), t(`${e.by} challenged '${e.word}'`, 't-bold'), dim(` by ${e.author} — ${e.seconds}s vote`)]))
+        break
+      case 'word_challenge_result':
+        out.push(tree(ts, [t(`'${e.word}' ${e.upheld ? 'voided' : 'kept'}`, e.upheld ? 't-red' : 't-green'), dim(`  (${e.yes}/${e.needed} to void)`)]))
         break
       case 'word_result':
         out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winnerName ? `${e.winnerName} wins` : 'no winner'}`, 't-bold'), dim(`  · chain length ${e.length}`)]))
@@ -193,8 +209,14 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
       case 'twenty_replied':
         out.push(L(ts, [dim('     → '), t(e.kind === 'guess' ? (e.correct ? 'correct!' : 'wrong') : REPLY_LABEL[e.reply], e.reply === 'yes' ? 't-green' : e.reply === 'no' ? 't-red' : 't-yellow')]))
         break
+      case 'twenty_guessed':
+        out.push(tree(ts, [t(e.name, nameColor(e.name)), dim(' guessed the answer → '), t(e.correct ? 'correct!' : 'wrong', e.correct ? 't-green' : 't-red')]))
+        break
+      case 'twenty_passed':
+        out.push(tree(ts, [t(e.name, nameColor(e.name)), dim(' ran out of time (turn used)')]))
+        break
       case 'twenty_result':
-        out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winner === 'guessers' ? 'guessers win' : e.winner === 'setter' ? 'setter wins' : 'void'}`, 't-bold'), dim(`  · answer ${e.answer}${e.solverName ? ` · solved by ${e.solverName}` : ''}`)]))
+        out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winner === 'guessers' ? 'guessers win' : e.winner === 'setter' ? 'setter wins' : 'stopped'}`, 't-bold'), dim(`  · answer ${e.answer}${e.solverName ? ` · solved by ${e.solverName}` : e.reason ? ` · ${e.reason}` : ''}`)]))
         break
     }
   }

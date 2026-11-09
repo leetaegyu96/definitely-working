@@ -660,3 +660,5 @@
 .ac-img + .ac-bubble, .ac-img + .ac-peer-text { margin-top: 6px; }
 .ac-msg-user.with-img { flex-direction: column; align-items: flex-end; }
 .ac-img-expired { display: inline-block; padding: 8px 12px; border: 1px dashed var(--border-2); border-radius: 12px; font-size: 12.5px; color: var(--text-3); }
+.ac-out-tag { display: inline-block; margin: 0 6px 2px 0; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 17px; color: var(--text-3); border: 1px solid var(--border-2); }
+.ac-msg-user .ac-out-tag { align-self: flex-end; }

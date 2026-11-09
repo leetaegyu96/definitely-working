@@ -24,7 +24,7 @@ export class BaseballGame implements GameEngine {
   private participants: string[] = []
   private guesses = new Map<string, string>()
   private history: BaseballView['history'] = []
-  private deadline: number | null = null
+  deadline: number | null = null
   private result: BaseballView['result'] = null
   private cancel: (() => void) | null = null
 
@@ -94,10 +94,16 @@ export class BaseballGame implements GameEngine {
     const g = action.guess
     if (g.length !== this.secret.length) return fail('INVALID', `${this.secret.length}자리 숫자를 입력하세요`)
     if (new Set(g).size !== g.length) return fail('INVALID', '서로 다른 숫자로만 입력하세요')
+    if (this.history.some((h) => h.entries.some((e) => e.playerId === playerId && e.guess === g)))
+      return fail('INVALID', '이미 냈던 숫자입니다')
     this.guesses.set(playerId, g)
     if (this.participants.every((id) => this.guesses.has(id) || !this.ctx.isConnected(id))) this.resolveTurn()
     else this.ctx.changed()
     return ok
+  }
+
+  playerGone() {
+    if (this.stage === 'guess' && this.participants.every((id) => this.guesses.has(id) || !this.ctx.isConnected(id))) this.resolveTurn()
   }
 
   playerLeft(playerId: string) {

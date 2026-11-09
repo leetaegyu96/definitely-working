@@ -39,6 +39,8 @@ function eventText(e: SystemEvent): { icon: ReactNode; text: ReactNode } | null 
       return { icon: <MessageSquareText size={13} />, text: <>모든 설명이 등록되었습니다. 자유 토론 {e.seconds}초</> }
     case 'liar_vote_open':
       return { icon: <ChevronRight size={13} />, text: <>{e.revote ? '재투표' : '투표'}가 열렸습니다 — 후보 {e.candidates.join(', ')}</> }
+    case 'liar_no_accused':
+      return { icon: <ChevronRight size={13} />, text: <>{e.revote ? '결선 투표도 동률' : '지목된 사람 없음'} — 라이어를 특정하지 못했습니다</> }
     case 'liar_accused':
       return { icon: <ChevronRight size={13} />, text: <><b>{e.name}</b>님이 {e.votes}표로 지목되었습니다</> }
     case 'liar_guess_open':
@@ -53,7 +55,14 @@ function eventText(e: SystemEvent): { icon: ReactNode; text: ReactNode } | null 
         text: <>문항 {e.index + 1} 정답 <b>{e.answer}</b>{e.correctNames.length ? ` · 정답자 ${e.correctNames.join(', ')}` : ' · 정답자 없음'}</>,
       }
     case 'quiz_result':
-      return { icon: <ChevronRight size={13} />, text: <>최종 1위 <b>{e.ranking[0]?.name ?? '-'}</b> ({e.ranking[0]?.score ?? 0}점)</> }
+      return {
+        icon: <ChevronRight size={13} />,
+        text: <>최종 1위 <b>{e.ranking.filter((r) => r.rank === 1).map((r) => r.name).join(', ') || '-'}</b> ({e.ranking[0]?.score ?? 0}점)</>,
+      }
+    case 'mafia_day':
+      return { icon: <ChevronRight size={13} />, text: <>{e.day}/{e.maxDays}일차 낮 — 토론을 시작합니다</> }
+    case 'mafia_gone':
+      return { icon: <LogOut size={13} />, text: <><b>{e.name}</b>님이 연결이 끊겨 제외되었습니다</> }
     case 'mafia_night':
       return { icon: <ChevronRight size={13} />, text: <>{e.day}일차 밤 — 마피아가 대상을 고르는 중입니다</> }
     case 'mafia_dawn':
@@ -67,7 +76,11 @@ function eventText(e: SystemEvent): { icon: ReactNode; text: ReactNode } | null 
     case 'word_played':
       return null
     case 'word_out':
-      return { icon: <LogOut size={13} />, text: <><b>{e.name}</b>님 탈락 — {e.reason === 'timeout' ? '시간 초과' : e.reason === 'rejected' ? '단어 무효 처리' : '세션 이탈'}</> }
+      return { icon: <LogOut size={13} />, text: <><b>{e.name}</b>님 탈락 — {e.reason === 'timeout' ? '시간 초과' : e.reason === 'rejected' ? '이의 제기로 단어 무효' : '연결 끊김·이탈'}</> }
+    case 'word_challenge':
+      return { icon: <ChevronRight size={13} />, text: <><b>{e.by}</b>님이 {e.author}님의 '{e.word}'에 이의를 제기했습니다 · {e.seconds}초 투표</> }
+    case 'word_challenge_result':
+      return { icon: <ChevronRight size={13} />, text: <>'{e.word}' {e.upheld ? '무효' : '인정'} — 무효 찬성 {e.yes}표 / 필요 {e.needed}표</> }
     case 'word_result':
       return { icon: <ChevronRight size={13} />, text: <>결과: {e.winnerName ? <><b>{e.winnerName}</b> 승리</> : '승자 없음'} · {e.length}개 연결</> }
     case 'baseball_round':
@@ -80,8 +93,15 @@ function eventText(e: SystemEvent): { icon: ReactNode; text: ReactNode } | null 
       return null
     case 'twenty_replied':
       return null
+    case 'twenty_guessed':
+      return null
+    case 'twenty_passed':
+      return { icon: <ChevronRight size={13} />, text: <><b>{e.name}</b>님 질문 시간 초과 — 1회 차감</> }
     case 'twenty_result':
-      return { icon: <ChevronRight size={13} />, text: <>결과: <b>{TWENTY_WINNER[e.winner]}</b> · 정답 {e.answer}{e.solverName ? ` · ${e.solverName}님이 맞힘` : ''}</> }
+      return {
+        icon: <ChevronRight size={13} />,
+        text: <>결과: <b>{TWENTY_WINNER[e.winner]}</b> · 정답 {e.answer}{e.solverName ? ` · ${e.solverName}님이 맞힘` : e.reason ? ` · ${e.reason}` : ''}</>,
+      }
   }
 }
 
@@ -103,6 +123,8 @@ function buildItems(chat: ChatMessage[], meId: string): Item[] {
       items.push({ k: 'desc', m, e: { code: 'liar_described', name: m.event.name, text: m.event.word, timedOut: false }, label: '단어' })
     } else if (m.event.code === 'twenty_asked') {
       items.push({ k: 'desc', m, e: { code: 'liar_described', name: m.event.name, text: m.event.text, timedOut: false }, label: m.event.kind === 'guess' ? '정답 도전' : '질문' })
+    } else if (m.event.code === 'twenty_guessed') {
+      items.push({ k: 'desc', m, e: { code: 'liar_described', name: m.event.name, text: m.event.correct ? '정답!' : '(내용 비공개)', timedOut: false }, label: '정답 도전', reply: m.event.correct ? '정답' : '실패' })
     } else if (m.event.code === 'twenty_replied') {
       const ev = m.event
       const prev = items[items.length - 1]
@@ -200,6 +222,7 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
                     <span className="ac-chip-seg">
                       <button type="button" className={twentyGuess ? '' : 'on'} onClick={() => setTwentyGuess(false)}>예/아니오 질문</button>
                       <button type="button" className={twentyGuess ? 'on' : ''} onClick={() => setTwentyGuess(true)}>정답 도전</button>
+                      <span className="ac-chip-muted">내 차례 · {fmtClock(left)}</span>
                     </span>
                   ),
                   onClear: () => setForceChat(true),
@@ -244,8 +267,10 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
                 ? '정답이라고 생각하는 단어 (질문 1회 소모)'
                 : '예/아니오로 답할 수 있는 질문을 입력하세요'
               : status !== 'online'
-          ? '연결을 다시 시도하는 중…'
-          : `${m.snap.name}에 메시지 보내기`
+                ? '연결을 다시 시도하는 중…'
+                : m.amOut
+                  ? '관전 채팅 — 진행 중인 참여자에게는 판이 끝난 뒤 보입니다'
+                  : `${m.snap.name}에 메시지 보내기`
 
   return (
     <div className="ac-main-body">
@@ -284,6 +309,7 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
             if (it.mine)
               return (
                 <div key={c.id} className={`ac-msg-user${it.grouped ? ' grouped' : ''}${img ? ' with-img' : ''}`}>
+                  {c.scope === 'out' && <span className="ac-out-tag">관전 채팅</span>}
                   {img}
                   {c.text && <div className="ac-bubble">{c.text}</div>}
                 </div>
@@ -295,6 +321,7 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
                   {!it.grouped && (
                     <div className="ac-peer-head">
                       <b>{c.authorName}</b>
+                      {c.scope === 'out' && <span className="ac-out-tag">관전 채팅</span>}
                       <time>{fmtTime(c.ts)}</time>
                     </div>
                   )}

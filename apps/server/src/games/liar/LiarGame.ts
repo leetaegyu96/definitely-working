@@ -7,44 +7,51 @@ import {
   type LiarStage,
   type LiarView,
 } from '@relay/shared'
+import { LIAR_WORDS, matchesAnswer, normalizeAnswer, type WordEntry } from '../../content/index.js'
 import { fail, ok, shuffle, type ActionResult, type GameContext, type GameEngine } from '../types.js'
-import { LIAR_WORDS } from './words.js'
 
-const VOTE_SECONDS = 45
-const GUESS_SECONDS = 30
+export const VOTE_SECONDS = 30
+export const REVOTE_SECONDS = 20
+export const GUESS_SECONDS = 20
 const OFFLINE_TURN_MS = 8_000
 
-export function normalizeWord(s: string): string {
-  return s.replace(/\s+/g, '').toLowerCase()
-}
+/** @deprecated normalizeAnswer 사용 */
+export const normalizeWord = normalizeAnswer
+
+type Cat = Exclude<LiarCategory, 'random'>
 
 export class LiarGame implements GameEngine {
   readonly type = 'liar' as const
   private stage: LiarStage = 'describe'
   private order: string[] = []
   private liarId = ''
-  private category: Exclude<LiarCategory, 'random'> = 'food'
-  private word = ''
+  private category: Cat = 'food'
+  private entry: WordEntry = LIAR_WORDS[0]
   private turnIndex = 0
   private descriptions: LiarView['descriptions'] = []
-  private deadline: number | null = null
+  deadline: number | null = null
   private revote = false
   private candidates: string[] = []
-  private votes = new Map<string, string>()
+  /** null = 기권 */
+  private votes = new Map<string, string | null>()
   private accusedId: string | null = null
   private result: LiarView['result'] = null
   private cancelTimer: (() => void) | null = null
 
   constructor(private ctx: GameContext<LiarSettings>) {}
 
+  private get word() {
+    return this.entry.text
+  }
+
   /* ── lifecycle ── */
 
   start() {
     const r = this.ctx.random
-    const cats = LIAR_CATEGORIES.filter((c) => c !== 'random') as Exclude<LiarCategory, 'random'>[]
+    const cats = LIAR_CATEGORIES.filter((c) => c !== 'random') as Cat[]
     this.category = this.ctx.settings.category === 'random' ? cats[Math.floor(r() * cats.length)] : this.ctx.settings.category
-    const words = LIAR_WORDS[this.category]
-    this.word = words[Math.floor(r() * words.length)]
+    const pool = LIAR_WORDS.filter((w) => w.enabled && w.categoryId === this.category)
+    this.entry = this.ctx.pickFresh(`liar:${this.category}`, pool, 1)[0]
     this.order = shuffle(
       this.ctx.participants.map((p) => p.id),
       r,
@@ -112,28 +119,32 @@ export class LiarGame implements GameEngine {
     this.candidates = candidates
     this.votes.clear()
     this.ctx.emit({ code: 'liar_vote_open', revote, candidates: candidates.map((c) => this.name(c)) })
-    this.schedule(VOTE_SECONDS * 1000, () => this.tally())
+    this.schedule((revote ? REVOTE_SECONDS : VOTE_SECONDS) * 1000, () => this.tally())
     this.ctx.changed()
   }
 
-  /** 투표 가능한 사람 = 참가자 전원 (본인이 후보여도 자신에게는 투표 불가) */
-  private voters() {
-    return this.order
+  /** 아직 투표하지 않았고, 접속 중이며, 투표할 대상이 있는 사람 */
+  private pendingVoters() {
+    return this.order.filter((v) => !this.votes.has(v) && this.ctx.isConnected(v) && this.canVote(v))
   }
 
   private tally() {
     this.clearTimer()
     const counts = new Map<string, number>()
-    for (const t of this.votes.values()) counts.set(t, (counts.get(t) ?? 0) + 1)
+    for (const t of this.votes.values()) if (t) counts.set(t, (counts.get(t) ?? 0) + 1)
     let max = 0
     for (const c of this.candidates) max = Math.max(max, counts.get(c) ?? 0)
     const top = this.candidates.filter((c) => (counts.get(c) ?? 0) === max)
-
-    if (max === 0 || top.length > 1) {
-      if (!this.revote) return this.beginVote(true, max === 0 ? this.candidates : top)
-      return this.finishRound('none', '재투표에서도 동률이 발생해 이번 라운드는 무효 처리되었습니다.')
+    if (max === 0) {
+      // 전원 기권(또는 무응답) → 시민이 라이어를 특정하지 못함
+      this.ctx.emit({ code: 'liar_no_accused', revote: this.revote })
+      return this.finishRound('liar', '아무도 지목되지 않아 라이어가 승리했습니다.')
     }
-
+    if (top.length > 1) {
+      if (!this.revote) return this.beginVote(true, top)
+      this.ctx.emit({ code: 'liar_no_accused', revote: true })
+      return this.finishRound('liar', '결선 투표도 동률이라 라이어를 특정하지 못했습니다.')
+    }
     this.accusedId = top[0]
     this.ctx.emit({ code: 'liar_accused', name: this.name(top[0]), votes: max })
     if (this.accusedId !== this.liarId) {
@@ -182,20 +193,22 @@ export class LiarGame implements GameEngine {
       case 'liar.vote': {
         if (this.stage !== 'vote') return fail('BAD_STATE', '투표 단계가 아닙니다')
         if (!isParticipant) return fail('FORBIDDEN', '참가자만 투표할 수 있습니다')
-        if (action.targetId === playerId) return fail('INVALID', '자기 자신에게는 투표할 수 없습니다')
-        if (!this.candidates.includes(action.targetId)) return fail('INVALID', '투표 대상이 아닙니다')
         if (this.votes.has(playerId)) return fail('BAD_STATE', '이미 투표했습니다')
-        this.votes.set(playerId, action.targetId)
-        const pending = this.voters().filter((v) => !this.votes.has(v) && this.ctx.isConnected(v) && this.canVote(v))
-        if (pending.length === 0) this.tally()
+        const t = action.targetId
+        if (t !== null) {
+          if (t === playerId) return fail('INVALID', '자기 자신에게는 투표할 수 없습니다')
+          if (!this.candidates.includes(t)) return fail('INVALID', '투표 대상이 아닙니다')
+        }
+        this.votes.set(playerId, t)
+        if (this.pendingVoters().length === 0) this.tally()
         else this.ctx.changed()
         return ok
       }
       case 'liar.guess': {
         if (this.stage !== 'guess') return fail('BAD_STATE', '키워드 추측 단계가 아닙니다')
         if (playerId !== this.liarId) return fail('FORBIDDEN', '라이어만 제출할 수 있습니다')
-        const correct = normalizeWord(action.word) === normalizeWord(this.word)
-        if (correct) this.finishRound('liar', '라이어가 키워드를 맞혔습니다.', action.word)
+        if (matchesAnswer(action.word, this.word, this.entry.aliases))
+          this.finishRound('liar', '라이어가 키워드를 맞혔습니다.', action.word)
         else this.finishRound('citizens', '라이어가 키워드를 맞히지 못했습니다.', action.word)
         return ok
       }
@@ -209,24 +222,33 @@ export class LiarGame implements GameEngine {
     return this.candidates.some((c) => c !== id)
   }
 
+  /** 연결이 끊긴 채 유예 시간이 지남: 지금 설명 차례면 바로 넘기고, 투표 대기에서 제외 */
+  playerGone(playerId: string) {
+    if (!this.order.includes(playerId) || this.stage === 'result') return
+    if (this.stage === 'describe' && this.order[this.turnIndex] === playerId) {
+      return this.recordDescription(playerId, '(응답 없음)', true)
+    }
+    if (this.stage === 'vote' && this.pendingVoters().length === 0) return this.tally()
+    this.ctx.changed()
+  }
+
   playerLeft(playerId: string) {
     if (!this.order.includes(playerId) || this.stage === 'result') return
-    if (playerId === this.liarId) return this.finishRound('none', '라이어가 세션을 나가 라운드가 종료되었습니다.')
+    if (playerId === this.liarId) return this.finishRound('none', '라이어가 세션을 나가 라운드가 중단되었습니다.')
     const wasCurrent = this.stage === 'describe' && this.order[this.turnIndex] === playerId
     const idx = this.order.indexOf(playerId)
     this.order.splice(idx, 1)
     this.candidates = this.candidates.filter((c) => c !== playerId)
     this.votes.delete(playerId)
     for (const [k, v] of this.votes) if (v === playerId) this.votes.delete(k)
-    if (this.order.length < 3) return this.finishRound('none', '참가 인원이 3명 미만이 되어 라운드가 종료되었습니다.')
+    if (this.order.length < 3) return this.finishRound('none', '참가 인원이 3명 미만이 되어 라운드가 중단되었습니다.')
     if (this.stage === 'describe') {
       if (idx < this.turnIndex) this.turnIndex--
       if (wasCurrent) return this.beginTurn(this.turnIndex)
     }
     if (this.stage === 'vote') {
       if (this.candidates.length === 0) return this.beginVote(this.revote, this.order.slice())
-      const pending = this.order.filter((v) => !this.votes.has(v) && this.ctx.isConnected(v) && this.canVote(v))
-      if (pending.length === 0) return this.tally()
+      if (this.pendingVoters().length === 0) return this.tally()
     }
     this.ctx.changed()
   }
@@ -236,6 +258,7 @@ export class LiarGame implements GameEngine {
   view(playerId: string | null): LiarView {
     const inGame = playerId !== null && this.order.includes(playerId)
     const isLiar = inGame && playerId === this.liarId
+    const voted = playerId && this.stage === 'vote' && this.votes.has(playerId)
     return {
       type: 'liar',
       round: this.ctx.round,
@@ -250,7 +273,7 @@ export class LiarGame implements GameEngine {
       revote: this.revote,
       candidates: this.stage === 'vote' ? this.candidates.slice() : [],
       votedIds: this.stage === 'vote' ? [...this.votes.keys()] : [],
-      myVote: playerId && this.stage === 'vote' ? (this.votes.get(playerId) ?? null) : null,
+      myVote: voted ? this.votes.get(playerId!)! : undefined,
       accusedId: this.accusedId,
       result: this.result,
     }

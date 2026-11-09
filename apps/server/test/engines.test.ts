@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '@relay/shared'
 import { LiarGame } from '../src/games/liar/LiarGame.js'
 import { QuizGame } from '../src/games/quiz/QuizGame.js'
 import type { GameContext } from '../src/games/types.js'
+import { pickFresh } from '../src/games/fresh.js'
 import { FakeClock } from './fakeClock.js'
 
 function ctx<S>(clock: FakeClock, settings: S, n: number, offline: string[] = []) {
@@ -20,6 +21,7 @@ function ctx<S>(clock: FakeClock, settings: S, n: number, offline: string[] = []
     emit: (e) => events.push(e),
     changed: () => {},
     finish: () => (finished = true),
+    pickFresh: (_k, pool, n) => pickFresh([], pool, n, clock.random).picked,
   }
   return { c, events, isFinished: () => finished }
 }
@@ -110,7 +112,7 @@ describe('LiarGame', () => {
     expect(g.view(null).result!.winner).toBe('liar')
   })
 
-  it('tie → revote among tied; second tie → round void', () => {
+  it('tie → revote among tied; second tie → liar wins', () => {
     const { g } = liarSetup(4)
     describeAll(g)
     act(g, 'p0', { type: 'liar.skipDiscussion' }, true)
@@ -130,7 +132,34 @@ describe('LiarGame', () => {
     act(g, d, { type: 'liar.vote', targetId: b })
     v = g.view(null)
     expect(v.stage).toBe('result')
-    expect(v.result!.winner).toBe('none')
+    expect(v.result!.winner).toBe('liar')
+  })
+
+  it('everyone abstaining → liar wins; abstain is final', () => {
+    const { g } = liarSetup(3)
+    describeAll(g)
+    act(g, 'p0', { type: 'liar.skipDiscussion' }, true)
+    const [a, b, c] = g.view(null).order
+    expect(act(g, a, { type: 'liar.vote', targetId: null }).ok).toBe(true)
+    expect(act(g, a, { type: 'liar.vote', targetId: b }).ok).toBe(false) // 변경 불가
+    expect(g.view(a).myVote).toBeNull()
+    act(g, b, { type: 'liar.vote', targetId: null })
+    act(g, c, { type: 'liar.vote', targetId: null })
+    const v = g.view(null)
+    expect(v.result!.winner).toBe('liar')
+    expect(v.result!.votes[a]).toBeNull()
+  })
+
+  it('vote stage ends at the deadline even if someone never votes', () => {
+    const { clock, g, liarId } = liarSetup(4)
+    describeAll(g)
+    act(g, 'p0', { type: 'liar.skipDiscussion' }, true)
+    const voter = g.view(null).order.find((x) => x !== liarId)!
+    act(g, voter, { type: 'liar.vote', targetId: liarId })
+    clock.advance(30_001)
+    expect(g.view(null).stage).toBe('guess')
+    clock.advance(20_001)
+    expect(g.view(null).result!.winner).toBe('citizens')
   })
 
   it('hides individual vote targets until the result', () => {
@@ -143,7 +172,7 @@ describe('LiarGame', () => {
     const other = order.find((x) => x !== voter)!
     const v = g.view(other) as LiarView
     expect(v.votedIds).toContain(voter)
-    expect(v.myVote).toBeNull()
+    expect(v.myVote).toBeUndefined()
     expect(v.result).toBeNull()
     expect(g.view(voter).myVote).toBe(liarId)
   })

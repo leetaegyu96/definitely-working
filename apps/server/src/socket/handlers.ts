@@ -60,7 +60,7 @@ export function registerSocketHandlers(io: IO, rooms: RoomManager) {
       current = { room, player }
       socket.join(roomChannel(room.code))
       room.attachSocket(player, socket.id)
-      return { token: player.token, snapshot: room.snapshotFor(player.id), chat: room.chat.slice(-100) }
+      return { token: player.token, snapshot: room.snapshotFor(player.id), chat: room.chatFor(player.id) }
     }
 
     function detach() {
@@ -183,6 +183,13 @@ export function createBroadcaster(io: IO) {
       })
     },
     onChat(room: Room, msg: Parameters<ServerToClientEvents['chat:message']>[0]) {
+      if (msg.type === 'chat' && msg.scope === 'out') {
+        for (const p of room.players.values()) {
+          if (!room.canSee(p.id, msg)) continue
+          for (const sid of p.sockets) io.to(sid).emit('chat:message', msg)
+        }
+        return
+      }
       io.to(roomChannel(room.code)).emit('chat:message', msg)
     },
     onDispose(room: Room) {

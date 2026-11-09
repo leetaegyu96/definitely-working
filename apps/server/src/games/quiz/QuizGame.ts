@@ -7,9 +7,9 @@ import {
   type QuizView,
 } from '@relay/shared'
 import { fail, ok, shuffle, type ActionResult, type GameContext, type GameEngine } from '../types.js'
-import { QUESTIONS, type QuizQuestion } from './questions.js'
+import { QUIZ_BANK } from '../../content/index.js'
 
-const REVEAL_MS = 5_000
+export const REVEAL_MS = 3_000
 const BASE_POINTS = 100
 const SPEED_BONUS = 50
 
@@ -27,9 +27,11 @@ export class QuizGame implements GameEngine {
   private participants: string[] = []
   private answers = new Map<string, { choice: number; at: number }>()
   private questionStartedAt = 0
-  private deadline: number | null = null
+  deadline: number | null = null
   private scores = new Map<string, number>()
   private correctCount = new Map<string, number>()
+  /** 정답을 맞힌 문항의 소요 시간 합 (동점 순위 결정용) */
+  private correctTime = new Map<string, number>()
   private reveal: QuizView['reveal'] = null
   private ranking: QuizView['ranking'] = null
   private cancelTimer: (() => void) | null = null
@@ -41,11 +43,11 @@ export class QuizGame implements GameEngine {
     const r = this.ctx.random
     const cat: QuizCategory = this.ctx.settings.category
     this.categoryLabel = QUIZ_CATEGORY_LABEL[cat]
-    const pool: QuizQuestion[] = cat === 'random' ? Object.values(QUESTIONS).flat() : QUESTIONS[cat]
-    const picked = shuffle(pool, r).slice(0, Math.min(this.ctx.settings.questionCount, pool.length))
+    const pool = quizPool(cat)
+    const picked = this.ctx.pickFresh(`quiz:${cat}`, pool, Math.min(this.ctx.settings.questionCount, pool.length))
     this.questions = picked.map((q) => {
       const order = shuffle([0, 1, 2, 3], r)
-      return { text: q.q, choices: order.map((i) => q.choices[i]), correctIndex: order.indexOf(q.answer) }
+      return { text: q.question, choices: order.map((i) => q.choices[i]), correctIndex: order.indexOf(q.correctIndex) }
     })
     this.participants = this.ctx.participants.map((p) => p.id)
     for (const id of this.participants) {
@@ -102,8 +104,9 @@ export class QuizGame implements GameEngine {
       let g = 0
       if (a && a.choice === q.correctIndex) {
         const elapsed = Math.max(0, a.at - this.questionStartedAt)
-        g = BASE_POINTS + Math.round(SPEED_BONUS * Math.max(0, 1 - elapsed / total))
+        g = BASE_POINTS + Math.floor((SPEED_BONUS * Math.max(0, total - elapsed)) / total)
         this.correctCount.set(id, (this.correctCount.get(id) ?? 0) + 1)
+        this.correctTime.set(id, (this.correctTime.get(id) ?? 0) + Math.min(elapsed, total))
       }
       gained[id] = g
       this.scores.set(id, (this.scores.get(id) ?? 0) + g)
@@ -126,10 +129,18 @@ export class QuizGame implements GameEngine {
     this.stage = 'result'
     this.deadline = null
     const all = new Set([...this.scores.keys()])
-    this.ranking = [...all]
-      .map((id) => ({ playerId: id, score: this.scores.get(id) ?? 0, correct: this.correctCount.get(id) ?? 0 }))
-      .sort((a, b) => b.score - a.score)
-    this.ctx.emit({ code: 'quiz_result', ranking: this.ranking.map((r) => ({ name: this.name(r.playerId), score: r.score })) })
+    this.ranking = rankQuiz(
+      [...all].map((id) => ({
+        playerId: id,
+        score: this.scores.get(id) ?? 0,
+        correct: this.correctCount.get(id) ?? 0,
+        timeMs: this.correctTime.get(id) ?? 0,
+      })),
+    )
+    this.ctx.emit({
+      code: 'quiz_result',
+      ranking: this.ranking.map((r) => ({ name: this.name(r.playerId), score: r.score, rank: r.rank })),
+    })
     this.ctx.finish()
     this.ctx.changed()
   }
@@ -148,6 +159,10 @@ export class QuizGame implements GameEngine {
 
   private allAnswered() {
     return this.participants.every((id) => this.answers.has(id) || !this.ctx.isConnected(id))
+  }
+
+  playerGone() {
+    if (this.stage === 'question' && this.allAnswered()) this.doReveal()
   }
 
   playerLeft(playerId: string) {
@@ -178,4 +193,22 @@ export class QuizGame implements GameEngine {
       ranking: this.ranking,
     }
   }
+}
+
+export function quizPool(cat: QuizCategory) {
+  return QUIZ_BANK.filter((q) => q.enabled && (cat === 'random' || q.categoryId === cat))
+}
+
+/** 총점 ↓ → 정답 수 ↓ → 정답 소요 시간 합 ↑. 세 값이 모두 같으면 공동 순위 */
+export function rankQuiz(rows: { playerId: string; score: number; correct: number; timeMs: number }[]) {
+  const sorted = rows.slice().sort((a, b) => b.score - a.score || b.correct - a.correct || a.timeMs - b.timeMs)
+  return sorted.map((r, i) => {
+    let rank = i + 1
+    for (let j = i - 1; j >= 0; j--) {
+      const p = sorted[j]
+      if (p.score === r.score && p.correct === r.correct && p.timeMs === r.timeMs) rank = j + 1
+      else break
+    }
+    return { ...r, rank }
+  })
 }

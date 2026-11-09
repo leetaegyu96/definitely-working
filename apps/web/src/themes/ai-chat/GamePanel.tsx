@@ -137,35 +137,41 @@ function Lobby({ m, toast }: { m: SessionModel; toast(s: string): void }) {
   )
 }
 
-type Field = { key: string; label: string; options: [string | number, string][] }
+type Field = { key: string; label: string; options: [string | number | boolean, string][] }
 const secs = (list: number[], zero?: string): [number, string][] => list.map((n) => [n, n === 0 && zero ? zero : `${n}초`])
 const FIELDS: Record<GameType, Field[]> = {
   liar: [
     { key: 'category', label: '카테고리', options: LIAR_CATEGORIES.map((c) => [c, LIAR_CATEGORY_LABEL[c]]) },
+    { key: 'describeSeconds', label: '설명 시간', options: secs([15, 25, 40, 60]) },
     { key: 'discussSeconds', label: '토론 시간', options: secs([0, 30, 60, 90, 120, 180], '없음') },
   ],
   quiz: [
     { key: 'category', label: '분야', options: QUIZ_CATEGORIES.map((c) => [c, QUIZ_CATEGORY_LABEL[c]]) },
-    { key: 'questionCount', label: '문항 수', options: [3, 5, 7, 10].map((n) => [n, `${n}문항`]) },
-    { key: 'seconds', label: '제한 시간', options: secs([10, 15, 20, 30]) },
+    { key: 'questionCount', label: '문항 수', options: [3, 5, 7, 10, 15].map((n) => [n, `${n}문항`]) },
+    { key: 'seconds', label: '제한 시간', options: secs([10, 15, 20, 30, 45]) },
   ],
   mafia: [
-    { key: 'nightSeconds', label: '밤 시간', options: secs([20, 30, 40, 60]) },
-    { key: 'discussSeconds', label: '낮 토론', options: secs([0, 60, 90, 120, 180], '없음') },
+    { key: 'discussSeconds', label: '낮 토론', options: secs([0, 60, 75, 90, 120, 180], '없음') },
+    { key: 'voteSeconds', label: '낮 투표', options: secs([15, 30, 45, 60]) },
+    { key: 'nightSeconds', label: '밤 시간', options: secs([15, 20, 30, 45, 60]) },
   ],
-  wordchain: [{ key: 'turnSeconds', label: '차례당 시간', options: secs([10, 15, 20, 30]) }],
+  wordchain: [{ key: 'turnSeconds', label: '차례당 시간', options: secs([10, 15, 20, 30, 45]) }],
   baseball: [
     { key: 'digits', label: '자릿수', options: [[3, '3자리'], [4, '4자리']] },
-    { key: 'maxRounds', label: '최대 턴', options: [5, 10, 15].map((n) => [n, `${n}턴`]) },
-    { key: 'roundSeconds', label: '턴당 시간', options: secs([20, 40, 60, 90]) },
+    { key: 'maxRounds', label: '최대 턴', options: [5, 10, 15, 20].map((n) => [n, `${n}턴`]) },
+    { key: 'roundSeconds', label: '턴당 시간', options: secs([15, 30, 45, 60, 90]) },
   ],
-  twenty: [{ key: 'maxQuestions', label: '질문 수', options: [10, 15, 20, 30].map((n) => [n, `${n}개`]) }],
+  twenty: [
+    { key: 'maxQuestions', label: '질문 수', options: [10, 15, 20, 30].map((n) => [n, `${n}개`]) },
+    { key: 'setupSeconds', label: '정답 고르는 시간', options: secs([15, 30, 45, 60]) },
+    { key: 'freeInput', label: '정답 정하기', options: [[false, '정답 은행에서 고르기'], [true, '직접 입력 (고급)']] },
+  ],
 }
 
 export function SettingsEditor({ m, toast, onDone }: { m: SessionModel; toast(s: string): void; onDone(): void }) {
   const [type, setType] = useState<GameType>(m.snap.gameType)
-  const [vals, setVals] = useState<Record<string, Record<string, string | number>>>(
-    () => structuredClone(m.snap.settings) as unknown as Record<string, Record<string, string | number>>,
+  const [vals, setVals] = useState<Record<string, Record<string, string | number | boolean>>>(
+    () => structuredClone(m.snap.settings) as unknown as Record<string, Record<string, string | number | boolean>>,
   )
   return (
     <div className="gp-form">
@@ -186,7 +192,8 @@ export function SettingsEditor({ m, toast, onDone }: { m: SessionModel; toast(s:
             value={String(vals[type][f.key])}
             onChange={(e) => {
               const raw = e.target.value
-              const v = typeof f.options[0][0] === 'number' ? Number(raw) : raw
+              const k = typeof f.options[0][0]
+              const v = k === 'number' ? Number(raw) : k === 'boolean' ? raw === 'true' : raw
               setVals((p) => ({ ...p, [type]: { ...p[type], [f.key]: v } }))
             }}
           >
@@ -368,10 +375,10 @@ function LiarVote({ m, toast }: { m: SessionModel; toast(s: string): void }) {
     <div className="gp-vote">
       <p className="gp-text">
         {v.revote ? '동률이 나와 후보를 좁혀 재투표합니다. ' : ''}
-        라이어로 의심되는 사람을 한 명 선택하세요. 결과는 모두 투표한 뒤 공개됩니다.
+        라이어로 의심되는 사람을 한 명 선택하세요. 기권할 수 있고, 제출 후에는 바꿀 수 없습니다.
         <span className="gp-muted"> · {voted}/{total}명 완료</span>
       </p>
-      {t && !t.myVote && (
+      {t && t.myVote === undefined && (
         <>
           <div className="gp-options" role="radiogroup">
             {t.options.map((p) => (
@@ -399,12 +406,15 @@ function LiarVote({ m, toast }: { m: SessionModel; toast(s: string): void }) {
             >
               투표 제출
             </button>
+            <button type="button" className="gp-btn" onClick={() => void run(gameAction({ type: 'liar.vote', targetId: null }), toast)}>
+              기권
+            </button>
           </div>
         </>
       )}
-      {t?.myVote && (
+      {t && t.myVote !== undefined && (
         <p className="gp-text gp-status">
-          <Check size={14} /> {m.name(t.myVote)}님에게 투표했습니다. 다른 참여자를 기다리는 중입니다.
+          <Check size={14} /> {t.myVote ? `${m.name(t.myVote)}님에게 투표했습니다` : '기권했습니다'}. 다른 참여자를 기다리는 중입니다.
         </p>
       )}
       {!t && <p className="gp-muted">관전 중에는 투표할 수 없습니다.</p>}
@@ -416,7 +426,8 @@ function LiarResult({ m, toast }: { m: SessionModel; toast(s: string): void }) {
   const v = m.liar!
   const r = v.result!
   const tally = new Map<string, number>()
-  for (const t of Object.values(r.votes)) tally.set(t, (tally.get(t) ?? 0) + 1)
+  for (const t of Object.values(r.votes)) if (t) tally.set(t, (tally.get(t) ?? 0) + 1)
+  const ballots = Object.entries(r.votes)
   const meWon =
     v.myRole === 'spectator' || r.winner === 'none'
       ? null
@@ -438,6 +449,12 @@ function LiarResult({ m, toast }: { m: SessionModel; toast(s: string): void }) {
               {[...tally.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => `${m.name(id)} ${n}표`).join(' · ') || '—'}
             </td>
           </tr>
+          {ballots.length > 0 && (
+            <tr>
+              <th>투표 내역</th>
+              <td>{ballots.map(([from, to]) => `${m.name(from)} → ${to ? m.name(to) : '기권'}`).join(' · ')}</td>
+            </tr>
+          )}
         </tbody>
       </table>
       <details className="gp-details">
@@ -480,7 +497,7 @@ function QuizBlock({ m, toast }: { m: SessionModel; toast(s: string): void }) {
   const v = m.quiz!
   const t = m.task.kind === 'quiz.answer' ? m.task : null
   const left = useRemaining(v.deadline)
-  const totalSecs = v.stage === 'question' ? m.snap.settings.quiz.seconds : 5
+  const totalSecs = v.stage === 'question' ? m.snap.settings.quiz.seconds : 3
   const pct = left === null ? 0 : Math.max(0, Math.min(100, (left / totalSecs) * 100))
 
   if (v.stage === 'result' && v.ranking) {
@@ -494,7 +511,7 @@ function QuizBlock({ m, toast }: { m: SessionModel; toast(s: string): void }) {
           <tbody>
             {v.ranking.map((r, i) => (
               <tr key={r.playerId} className={r.playerId === m.snap.meId ? 'me' : ''}>
-                <td>{i > 0 && v.ranking![i - 1].score === r.score ? '' : i + 1}</td>
+                <td>{i > 0 && v.ranking![i - 1].rank === r.rank ? '' : r.rank}</td>
                 <td>{m.name(r.playerId)}</td>
                 <td className="al-r">{r.correct}/{v.total}</td>
                 <td className="al-r num">{r.score.toLocaleString()}</td>

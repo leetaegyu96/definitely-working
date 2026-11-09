@@ -14,7 +14,8 @@ import {
   type RoomSnapshot,
   type SystemEvent,
 } from '@relay/shared'
-import { createEngine } from '../games/registry.js'
+import { pickFresh } from '../games/fresh.js'
+import { createEngine, startCheck } from '../games/registry.js'
 import type { GameEngine } from '../games/types.js'
 import { newId, newToken } from '../services/ids.js'
 import type { Clock } from '../services/clock.js'
@@ -38,6 +39,10 @@ export interface RoomHooks {
 export type RoomResult = { ok: true } | { ok: false; code: 'BAD_STATE' | 'FORBIDDEN' | 'INVALID' | 'FULL'; message: string }
 
 export const STARTING_MS = 3_000
+/** 진행 중 연결이 끊겼을 때 게임별 미응답/이탈 처리까지 기다리는 시간 */
+export const PRESENCE_GRACE_MS = 10_000
+/** 결과 화면을 볼 시간 — 이 시간 안에는 다음 판을 시작할 수 없다 */
+export const RESULT_COOLDOWN_MS = 5_000
 
 export class Room {
   readonly createdAt: number
@@ -54,6 +59,10 @@ export class Room {
   /** 마지막으로 접속자가 있었던 시각 (빈 방 정리용) */
   lastOccupiedAt: number
   private startTimer: (() => void) | null = null
+  private graceTimers = new Map<string, () => void>()
+  /** 콘텐츠 종류별 최근 출제 id (연속 반복 방지) */
+  private recent = new Map<string, string[]>()
+  private resultAt = 0
   disposed = false
 
   constructor(
@@ -120,6 +129,8 @@ export class Room {
   attachSocket(p: Player, socketId: string) {
     p.sockets.add(socketId)
     p.disconnectedAt = null
+    this.graceTimers.get(p.id)?.()
+    this.graceTimers.delete(p.id)
     this.lastOccupiedAt = this.clock.now()
     this.changed()
   }
@@ -129,6 +140,17 @@ export class Room {
     if (p.sockets.size === 0) {
       p.disconnectedAt = this.clock.now()
       this.lastOccupiedAt = this.clock.now()
+      if (this.phase === 'PLAYING' && this.game && !p.spectator && !this.graceTimers.has(p.id)) {
+        const game = this.game
+        this.graceTimers.set(
+          p.id,
+          this.clock.setTimer(PRESENCE_GRACE_MS, () => {
+            this.graceTimers.delete(p.id)
+            if (this.disposed || this.game !== game || this.phase !== 'PLAYING' || p.sockets.size > 0) return
+            game.playerGone?.(p.id)
+          }),
+        )
+      }
     }
     this.changed()
   }
@@ -137,6 +159,8 @@ export class Room {
     const p = this.players.get(id)
     if (!p) return
     this.players.delete(id)
+    this.graceTimers.get(id)?.()
+    this.graceTimers.delete(id)
     this.event({ code: 'left', name: p.name })
     void reason
     this.game?.playerLeft(id)
@@ -164,7 +188,35 @@ export class Room {
 
   say(p: Player, text: string, image?: ChatImage) {
     if (image) this.expireOldImages()
-    this.push({ id: newId(), ts: this.clock.now(), type: 'chat', authorId: p.id, authorName: p.name, text, ...(image ? { image } : {}) })
+    // 진행 중인 판에서 빠진 사람(관전자·사망·탈락)의 말은 같은 처지끼리만 본다
+    const out = this.phase === 'PLAYING' && this.isOut(p.id)
+    this.push({
+      id: newId(),
+      ts: this.clock.now(),
+      type: 'chat',
+      authorId: p.id,
+      authorName: p.name,
+      text,
+      ...(image ? { image } : {}),
+      ...(out ? { scope: 'out' as const } : {}),
+    })
+  }
+
+  /** 진행 중인 판에 영향을 줄 수 없는 사람 */
+  isOut(id: string) {
+    const p = this.players.get(id)
+    if (!p) return true
+    return p.spectator || !!this.game?.isOut?.(id)
+  }
+
+  /** 이 사람이 볼 수 있는 메시지인지 (관전자 대화는 판이 끝나면 모두에게 공개) */
+  canSee(id: string, m: ChatMessage) {
+    if (m.type !== 'chat' || m.scope !== 'out') return true
+    return this.phase !== 'PLAYING' || this.isOut(id)
+  }
+
+  chatFor(id: string, limit = 100) {
+    return this.chat.filter((m) => this.canSee(id, m)).slice(-limit)
   }
 
   /** 서버 메모리 보호: 최근 이미지 N장만 보관하고 나머지는 "만료" 표시만 남긴다 */
@@ -215,6 +267,10 @@ export class Room {
     if (by !== this.hostId) return { ok: false, code: 'FORBIDDEN', message: '세션 호스트만 시작할 수 있습니다' }
     if (this.phase === 'PLAYING' || this.phase === 'STARTING')
       return { ok: false, code: 'BAD_STATE', message: '이미 진행 중입니다' }
+    if (this.phase === 'RESULT' && this.clock.now() - this.resultAt < RESULT_COOLDOWN_MS)
+      return { ok: false, code: 'BAD_STATE', message: '결과를 확인한 뒤 잠시 후 시작할 수 있습니다' }
+    const pre = startCheck(this.gameType, this.settings)
+    if (!pre.ok) return { ok: false, code: 'BAD_STATE', message: pre.reason }
     // 관전자는 다음 게임부터 참가자로 전환
     for (const p of this.players.values()) p.spectator = false
     const eligible = this.activePlayers.filter((p) => p.sockets.size > 0)
@@ -264,6 +320,13 @@ export class Room {
       changed: () => this.changed(),
       finish: () => {
         this.phase = 'RESULT'
+        this.resultAt = this.clock.now()
+        this.clearGrace()
+      },
+      pickFresh: (key, pool, count) => {
+        const r = pickFresh(this.recent.get(key) ?? [], pool, count, () => this.clock.random())
+        this.recent.set(key, r.recent)
+        return r.picked
       },
     })
     this.game.start()
@@ -281,7 +344,13 @@ export class Room {
     return { ok: true }
   }
 
+  private clearGrace() {
+    for (const c of this.graceTimers.values()) c()
+    this.graceTimers.clear()
+  }
+
   private resetToWaiting() {
+    this.clearGrace()
     this.cancelStart()
     this.game?.dispose()
     this.game = null
@@ -291,6 +360,9 @@ export class Room {
 
   action(by: string, action: GameAction): RoomResult {
     if (this.phase !== 'PLAYING' || !this.game) return { ok: false, code: 'BAD_STATE', message: '진행 중인 작업이 없습니다' }
+    // 마감 시각이 지난 입력은 타이머가 아직 돌기 전이라도 인정하지 않는다
+    const d = this.game.deadline
+    if (typeof d === 'number' && this.clock.now() > d) return { ok: false, code: 'BAD_STATE', message: '제한 시간이 지났습니다' }
     const r = this.game.action(by, action, { isHost: by === this.hostId })
     return r.ok ? { ok: true } : r
   }
@@ -324,6 +396,7 @@ export class Room {
 
   dispose() {
     this.disposed = true
+    this.clearGrace()
     this.startTimer?.()
     this.game?.dispose()
   }

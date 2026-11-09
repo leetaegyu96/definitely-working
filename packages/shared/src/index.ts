@@ -89,7 +89,7 @@ export const GAME_META: Record<GameType, GameMeta> = {
   },
 }
 
-export const LIAR_CATEGORIES = ['random', 'food', 'animal', 'place', 'job', 'object', 'sports'] as const
+export const LIAR_CATEGORIES = ['random', 'food', 'animal', 'place', 'job', 'object', 'sports', 'hobby', 'transport', 'work', 'nature', 'gadget', 'emotion'] as const
 export type LiarCategory = (typeof LIAR_CATEGORIES)[number]
 export const LIAR_CATEGORY_LABEL: Record<LiarCategory, string> = {
   random: '무작위',
@@ -99,9 +99,15 @@ export const LIAR_CATEGORY_LABEL: Record<LiarCategory, string> = {
   job: '직업',
   object: '사물',
   sports: '스포츠',
+  hobby: '취미',
+  transport: '교통수단',
+  work: '학교·회사',
+  nature: '자연·날씨',
+  gadget: '전자기기',
+  emotion: '감정·상황',
 }
 
-export const QUIZ_CATEGORIES = ['random', 'general', 'it', 'science', 'history'] as const
+export const QUIZ_CATEGORIES = ['random', 'general', 'it', 'science', 'history', 'language', 'media', 'life'] as const
 export type QuizCategory = (typeof QUIZ_CATEGORIES)[number]
 export const QUIZ_CATEGORY_LABEL: Record<QuizCategory, string> = {
   random: '전체',
@@ -109,32 +115,39 @@ export const QUIZ_CATEGORY_LABEL: Record<QuizCategory, string> = {
   it: 'IT·개발',
   science: '과학',
   history: '역사',
+  language: '언어·문학',
+  media: '영화·게임',
+  life: '음식·생활',
 }
 
 export const liarSettingsSchema = z.object({
   category: z.enum(LIAR_CATEGORIES).default('random'),
-  describeSeconds: z.number().int().min(15).max(120).default(40),
-  discussSeconds: z.number().int().min(0).max(300).default(60),
+  describeSeconds: z.number().int().min(15).max(60).default(25),
+  discussSeconds: z.number().int().min(0).max(180).default(60),
 })
 export const quizSettingsSchema = z.object({
   category: z.enum(QUIZ_CATEGORIES).default('random'),
-  questionCount: z.number().int().min(3).max(15).default(5),
-  seconds: z.number().int().min(10).max(60).default(20),
+  questionCount: z.number().int().min(3).max(15).default(7),
+  seconds: z.number().int().min(10).max(45).default(20),
 })
 export const mafiaSettingsSchema = z.object({
-  nightSeconds: z.number().int().min(15).max(120).default(40),
-  discussSeconds: z.number().int().min(0).max(300).default(90),
+  nightSeconds: z.number().int().min(15).max(60).default(30),
+  discussSeconds: z.number().int().min(0).max(180).default(75),
+  voteSeconds: z.number().int().min(15).max(60).default(30),
 })
 export const wordchainSettingsSchema = z.object({
-  turnSeconds: z.number().int().min(5).max(60).default(15),
+  turnSeconds: z.number().int().min(5).max(45).default(15),
 })
 export const baseballSettingsSchema = z.object({
   digits: z.number().int().min(3).max(4).default(3),
   maxRounds: z.number().int().min(5).max(20).default(10),
-  roundSeconds: z.number().int().min(15).max(120).default(40),
+  roundSeconds: z.number().int().min(15).max(90).default(30),
 })
 export const twentySettingsSchema = z.object({
   maxQuestions: z.number().int().min(10).max(30).default(20),
+  setupSeconds: z.number().int().min(15).max(60).default(30),
+  /** 출제자가 정답을 직접 입력하는 고급 옵션 (기본: 정답 은행에서 뽑기) */
+  freeInput: z.boolean().default(false),
 })
 export type LiarSettings = z.infer<typeof liarSettingsSchema>
 export type QuizSettings = z.infer<typeof quizSettingsSchema>
@@ -225,6 +238,7 @@ export type SystemEvent =
   | { code: 'liar_described'; name: string; text: string; timedOut: boolean }
   | { code: 'liar_discuss'; seconds: number }
   | { code: 'liar_vote_open'; revote: boolean; candidates: string[] }
+  | { code: 'liar_no_accused'; revote: boolean }
   | { code: 'liar_accused'; name: string; votes: number }
   | { code: 'liar_guess_open'; name: string }
   | {
@@ -237,21 +251,28 @@ export type SystemEvent =
     }
   | { code: 'quiz_question'; index: number; total: number; text: string }
   | { code: 'quiz_reveal'; index: number; answer: string; correctNames: string[] }
-  | { code: 'quiz_result'; ranking: { name: string; score: number }[] }
+  | { code: 'quiz_result'; ranking: { name: string; score: number; rank: number }[] }
+  | { code: 'mafia_day'; day: number; maxDays: number }
   | { code: 'mafia_night'; day: number }
   | { code: 'mafia_dawn'; day: number; killedName: string | null }
   | { code: 'mafia_vote_open'; day: number }
   | { code: 'mafia_executed'; name: string | null; votes: number }
+  | { code: 'mafia_gone'; name: string }
   | { code: 'mafia_result'; winner: 'mafia' | 'citizens' | 'none'; mafiaNames: string[]; reason: string }
   | { code: 'word_played'; name: string; word: string }
   | { code: 'word_out'; name: string; reason: 'timeout' | 'rejected' | 'left' }
+  | { code: 'word_challenge'; by: string; word: string; author: string; seconds: number }
+  | { code: 'word_challenge_result'; word: string; upheld: boolean; yes: number; needed: number }
   | { code: 'word_result'; winnerName: string | null; length: number }
   | { code: 'baseball_round'; round: number; results: { name: string; guess: string; strike: number; ball: number }[] }
   | { code: 'baseball_result'; winners: string[]; secret: string }
   | { code: 'twenty_ready'; setterName: string; category: string }
   | { code: 'twenty_asked'; name: string; text: string; kind: 'question' | 'guess' }
   | { code: 'twenty_replied'; text: string; reply: TwentyReply; kind: 'question' | 'guess'; correct: boolean }
-  | { code: 'twenty_result'; winner: 'guessers' | 'setter' | 'none'; answer: string; solverName: string | null }
+  /** 오답 도전은 내용을 공개하지 않는다 */
+  | { code: 'twenty_guessed'; name: string; correct: boolean }
+  | { code: 'twenty_passed'; name: string }
+  | { code: 'twenty_result'; winner: 'guessers' | 'setter' | 'none'; answer: string; solverName: string | null; reason?: string }
 
 export interface ChatImage {
   dataUrl: string
@@ -270,6 +291,8 @@ export type ChatMessage =
       image?: ChatImage
       /** 보관 개수를 넘어 서버에서 지워진 이미지 */
       imageExpired?: boolean
+      /** 관전자·탈락자 전용 대화 (진행 중인 판에 영향을 주지 않도록 생존자에게는 보내지 않음) */
+      scope?: 'out'
     }
   | { id: string; ts: number; type: 'event'; event: SystemEvent }
 
@@ -292,7 +315,8 @@ export interface LiarView {
   revote: boolean
   candidates: string[]
   votedIds: string[]
-  myVote: string | null
+  /** undefined = 아직 투표 안 함, null = 기권 */
+  myVote: string | null | undefined
   accusedId: string | null
   result: {
     winner: 'liar' | 'citizens' | 'none'
@@ -300,7 +324,8 @@ export interface LiarView {
     word: string
     guess: string | null
     reason: string
-    votes: Record<string, string>
+    /** 마지막 투표 내역 (null = 기권) */
+    votes: Record<string, string | null>
   } | null
 }
 
@@ -320,7 +345,8 @@ export interface QuizView {
   myAnswer: number | null
   reveal: { correctIndex: number; answers: Record<string, number | null>; gained: Record<string, number> } | null
   scores: Record<string, number>
-  ranking: { playerId: string; score: number; correct: number }[] | null
+  /** 총점 → 정답 수 → 정답 소요 시간 합(짧을수록 위) 순. 모두 같으면 공동 순위 */
+  ranking: { playerId: string; score: number; correct: number; timeMs: number; rank: number }[] | null
 }
 
 export type MafiaStage = 'night' | 'day' | 'vote' | 'result'
@@ -330,6 +356,7 @@ export interface MafiaView {
   round: number
   stage: MafiaStage
   day: number
+  maxDays: number
   myRole: 'citizen' | 'mafia' | 'spectator'
   /** 마피아에게만: 동료 마피아 */
   team: string[]
@@ -358,8 +385,19 @@ export interface WordchainView {
   /** 다음 단어가 시작해야 하는 글자 (두음법칙 포함) */
   allowed: string[]
   deadline: number | null
-  /** 호스트가 이의 제기(무효 처리)할 수 있는 마지막 단어 */
-  canReject: boolean
+  /** 사전이 없는 간편 모드: 직전 단어에 이의를 제기할 수 있는 마감 시각 (없으면 null) */
+  challengeUntil: number | null
+  /** 이의 제기 투표 (생존자 과반 찬성 시 무효 → 낸 사람 탈락) */
+  challenge: {
+    byId: string
+    authorId: string
+    word: string
+    voters: string[]
+    votedIds: string[]
+    myVote: boolean | undefined
+    needed: number
+    deadline: number
+  } | null
   result: { winnerId: string | null } | null
 }
 
@@ -385,15 +423,25 @@ export interface TwentyView {
   round: number
   stage: 'setup' | 'asking' | 'result'
   setterId: string
+  /** 질문 순서와 현재 질문 차례 */
+  order: string[]
+  turnId: string | null
+  /** 출제자에게만, 준비 단계에서 고를 수 있는 정답 후보 */
+  options: { id: string; answer: string; category: string }[] | null
+  rerollsLeft: number
+  freeInput: boolean
+  /** 판 전체 제한 시각 */
+  endsAt: number | null
   myRole: 'setter' | 'guesser' | 'spectator'
   category: string
   /** 출제자에게만 (결과 단계에서는 result.answer) */
   answer: string | null
   maxQuestions: number
-  questions: { id: string; askerId: string; text: string; kind: 'question' | 'guess'; reply: TwentyReply | null; correct: boolean }[]
+  /** 오답 도전의 text는 도전자·출제자에게만 보이고 나머지에게는 빈 문자열 */
+  questions: { id: string; askerId: string; text: string; kind: 'question' | 'guess' | 'pass'; reply: TwentyReply | null; correct: boolean }[]
   pendingId: string | null
   deadline: number | null
-  result: { winner: 'guessers' | 'setter' | 'none'; answer: string; solverId: string | null } | null
+  result: { winner: 'guessers' | 'setter' | 'none'; answer: string; solverId: string | null; reason: string } | null
 }
 
 export type GameView = LiarView | QuizView | MafiaView | WordchainView | BaseballView | TwentyView
@@ -444,7 +492,7 @@ export const chatSendSchema = z
   .refine((v) => v.text.length > 0 || !!v.image, '메시지를 입력하세요')
 export const gameActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('liar.describe'), text: z.string().trim().min(1).max(LIMITS.describeMax) }),
-  z.object({ type: z.literal('liar.vote'), targetId: z.string().min(1).max(32) }),
+  z.object({ type: z.literal('liar.vote'), targetId: z.string().min(1).max(32).nullable() }),
   z.object({ type: z.literal('liar.guess'), word: z.string().trim().min(1).max(LIMITS.guessMax) }),
   z.object({ type: z.literal('liar.skipDiscussion') }),
   z.object({ type: z.literal('quiz.answer'), choice: z.number().int().min(0).max(3) }),
@@ -452,9 +500,16 @@ export const gameActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mafia.vote'), targetId: z.string().min(1).max(32).nullable() }),
   z.object({ type: z.literal('mafia.skip') }),
   z.object({ type: z.literal('word.submit'), word: z.string().trim().min(1).max(20) }),
-  z.object({ type: z.literal('word.reject') }),
+  z.object({ type: z.literal('word.challenge') }),
+  z.object({ type: z.literal('word.challengeVote'), agree: z.boolean() }),
   z.object({ type: z.literal('baseball.guess'), guess: z.string().regex(/^\d{3,4}$/, '숫자 3~4자리를 입력하세요') }),
-  z.object({ type: z.literal('twenty.setup'), answer: z.string().trim().min(1).max(30), category: z.string().trim().min(1).max(20) }),
+  z.object({
+    type: z.literal('twenty.setup'),
+    optionId: z.string().min(1).max(40).optional(),
+    answer: z.string().trim().min(1).max(30).optional(),
+    category: z.string().trim().min(1).max(20).optional(),
+  }),
+  z.object({ type: z.literal('twenty.reroll') }),
   z.object({ type: z.literal('twenty.ask'), text: z.string().trim().min(1).max(100) }),
   z.object({ type: z.literal('twenty.guess'), text: z.string().trim().min(1).max(30) }),
   z.object({ type: z.literal('twenty.reply'), questionId: z.string().min(1).max(32), reply: z.enum(['yes', 'no', 'maybe']) }),

@@ -1,7 +1,8 @@
 import type { GameAction, MafiaSettings, MafiaStage, MafiaView } from '@relay/shared'
 import { fail, ok, shuffle, type ActionResult, type GameContext, type GameEngine } from '../types.js'
 
-const VOTE_SECONDS = 40
+/** 판이 끝없이 길어지지 않도록: 8일째 낮 투표까지 승부가 안 나면 시민 승리 */
+export const MAX_DAYS = 8
 
 /** 인원별 마피아 수 (시민·마피아만 사용하는 간소화 규칙) */
 export function mafiaCount(n: number) {
@@ -10,7 +11,7 @@ export function mafiaCount(n: number) {
 
 export class MafiaGame implements GameEngine {
   readonly type = 'mafia' as const
-  private stage: MafiaStage = 'night'
+  private stage: MafiaStage = 'day'
   private day = 1
   private players: string[] = []
   private mafia = new Set<string>()
@@ -19,7 +20,7 @@ export class MafiaGame implements GameEngine {
   private dayVotes = new Map<string, string | null>()
   private lastKilled: string | null = null
   private lastExecuted: string | null | undefined = undefined
-  private deadline: number | null = null
+  deadline: number | null = null
   private result: MafiaView['result'] = null
   private cancel: (() => void) | null = null
 
@@ -31,7 +32,8 @@ export class MafiaGame implements GameEngine {
     for (const id of shuffled.slice(0, mafiaCount(this.players.length))) this.mafia.add(id)
     this.alive = new Set(this.players)
     this.ctx.emit({ code: 'game_started', game: 'mafia', round: this.ctx.round })
-    this.beginNight()
+    // 첫날은 낮 토론부터: 말 한마디 못 하고 밤에 제거되는 일을 막는다
+    this.beginDay()
   }
 
   dispose() {
@@ -98,10 +100,12 @@ export class MafiaGame implements GameEngine {
     this.lastKilled = killed
     this.ctx.emit({ code: 'mafia_dawn', day: this.day, killedName: killed ? this.name(killed) : null })
     if (this.checkWin()) return
+    this.day++
     this.beginDay()
   }
 
   private beginDay() {
+    this.ctx.emit({ code: 'mafia_day', day: this.day, maxDays: MAX_DAYS })
     const secs = this.ctx.settings.discussSeconds
     if (secs <= 0) return this.beginVote()
     this.stage = 'day'
@@ -113,7 +117,7 @@ export class MafiaGame implements GameEngine {
     this.stage = 'vote'
     this.dayVotes.clear()
     this.ctx.emit({ code: 'mafia_vote_open', day: this.day })
-    this.schedule(VOTE_SECONDS * 1000, () => this.resolveVote())
+    this.schedule(this.ctx.settings.voteSeconds * 1000, () => this.resolveVote())
     this.ctx.changed()
   }
 
@@ -133,7 +137,7 @@ export class MafiaGame implements GameEngine {
     this.lastExecuted = executed
     this.ctx.emit({ code: 'mafia_executed', name: executed ? this.name(executed) : null, votes })
     if (this.checkWin()) return
-    this.day++
+    if (this.day >= MAX_DAYS) return this.finish('citizens', `${MAX_DAYS}일 동안 마피아가 이기지 못해 시민이 승리했습니다.`)
     this.beginNight()
   }
 
@@ -187,6 +191,17 @@ export class MafiaGame implements GameEngine {
     }
   }
 
+  isOut(playerId: string) {
+    return this.players.includes(playerId) && !this.alive.has(playerId) && this.stage !== 'result'
+  }
+
+  /** 연결이 끊긴 채 유예 시간이 지나면 이탈로 보고 판에서 제외 (역할은 공개하지 않음) */
+  playerGone(playerId: string) {
+    if (!this.alive.has(playerId) || this.stage === 'result') return
+    this.ctx.emit({ code: 'mafia_gone', name: this.name(playerId) })
+    this.playerLeft(playerId)
+  }
+
   playerLeft(playerId: string) {
     if (!this.players.includes(playerId) || this.stage === 'result') return
     this.alive.delete(playerId)
@@ -206,6 +221,7 @@ export class MafiaGame implements GameEngine {
       round: this.ctx.round,
       stage: this.stage,
       day: this.day,
+      maxDays: MAX_DAYS,
       myRole: !inGame ? 'spectator' : isMafia ? 'mafia' : 'citizen',
       team: isMafia || done ? [...this.mafia] : [],
       players: this.players.slice(),
