@@ -97,3 +97,30 @@ describe('content data', () => {
     ])
   })
 })
+
+describe('v2.1 review checks', () => {
+  it('QUIZ_POOL_SIZE in shared matches the real bank (UI shows the right per-category max)', async () => {
+    const { QUIZ_POOL_SIZE } = await import('@relay/shared')
+    for (const c of QUIZ_CATEGORIES) {
+      const n = QUIZ_BANK.filter((q) => q.enabled && (c === 'random' || q.categoryId === c)).length
+      expect(QUIZ_POOL_SIZE[c], c).toBe(n)
+    }
+  })
+
+  it('multiple aliases are separate array items and each matches', () => {
+    const w = LIAR_WORDS.find((x) => x.text === '철인3종')!
+    expect(w.aliases).toEqual(['철인삼종', '트라이애슬론'])
+    for (const t of ['철인3종', '철인 삼종', '트라이애슬론']) expect(matchesAnswer(t, w.text, w.aliases), t).toBe(true)
+    expect(matchesAnswer('철인삼종/트라이애슬론', w.text, w.aliases)).toBe(false)
+  })
+
+  it('twenty free-input answers are validated by the action schema', async () => {
+    const { gameActionSchema } = await import('@relay/shared')
+    const ok = (answer: string, category = '음식') => gameActionSchema.safeParse({ type: 'twenty.setup', answer, category }).success
+    expect(ok('김치찌개')).toBe(true)
+    expect(ok('a')).toBe(false)
+    expect(ok('가'.repeat(21))).toBe(false)
+    expect(ok('<script>')).toBe(false)
+    expect(ok('김치', '음식<>')).toBe(false)
+  })
+})

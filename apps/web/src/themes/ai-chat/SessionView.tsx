@@ -269,7 +269,7 @@ export function SessionView({ m, toast }: { m: SessionModel; toast(s: string): v
               : status !== 'online'
                 ? '연결을 다시 시도하는 중…'
                 : m.amOut
-                  ? '관전 채팅 — 진행 중인 참여자에게는 판이 끝난 뒤 보입니다'
+                  ? '관전 채팅 — 진행 중인 참여자에게는 보이지 않고, 판이 끝나도 공개되지 않습니다'
                   : `${m.snap.name}에 메시지 보내기`
 
   return (

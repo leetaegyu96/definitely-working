@@ -173,7 +173,7 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
         out.push(tree(ts, e.name ? [t(e.name, 't-bold'), t(` voted out (${e.votes})`)] : [dim('tie or abstain — nobody voted out')]))
         break
       case 'mafia_result':
-        out.push(L(ts, [t('● ', 't-green'), t(`Result: ${e.winner === 'mafia' ? 'mafia wins' : e.winner === 'citizens' ? 'citizens win' : 'stopped'}`, 't-bold')]))
+        out.push(L(ts, [t('● ', e.winner === 'draw' || e.winner === 'none' ? 't-yellow' : 't-green'), t(`Result: ${e.winner === 'mafia' ? 'mafia wins' : e.winner === 'citizens' ? 'citizens win' : e.winner === 'draw' ? 'draw (day limit)' : 'stopped'}`, 't-bold')]))
         out.push(L(ts, [dim('  mafia    '), t(e.mafiaNames.join(', '))]))
         out.push(L(ts, [dim(`  ${e.reason}`)]))
         break
@@ -207,7 +207,7 @@ export function formatChat(msgs: ChatMessage[], snap: RoomSnapshot | null): TLin
         out.push(tree(ts, [t(e.name, nameColor(e.name)), dim(e.kind === 'guess' ? ' guesses: ' : ' asks: '), t(e.text, e.kind === 'guess' ? 't-bold' : undefined)]))
         break
       case 'twenty_replied':
-        out.push(L(ts, [dim('     → '), t(e.kind === 'guess' ? (e.correct ? 'correct!' : 'wrong') : REPLY_LABEL[e.reply], e.reply === 'yes' ? 't-green' : e.reply === 'no' ? 't-red' : 't-yellow')]))
+        out.push(L(ts, [dim('     → '), t(e.kind === 'guess' ? (e.correct ? 'correct!' : 'wrong') : REPLY_LABEL[e.reply], e.reply === 'yes' ? 't-green' : e.reply === 'no' ? 't-red' : 't-yellow'), ...(e.reply === 'maybe' && e.kind === 'question' ? [dim(' (not counted — same player asks again)')] : [])]))
         break
       case 'twenty_guessed':
         out.push(tree(ts, [t(e.name, nameColor(e.name)), dim(' guessed the answer → '), t(e.correct ? 'correct!' : 'wrong', e.correct ? 't-green' : 't-red')]))

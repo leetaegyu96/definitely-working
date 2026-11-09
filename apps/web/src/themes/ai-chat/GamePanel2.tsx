@@ -110,7 +110,7 @@ export function MafiaBlock({ m, toast }: P) {
       {v.stage === 'night' &&
         (t.kind === 'mafia.kill' ? (
           <>
-            <p className="gp-text">제외할 대상을 고르세요. 마피아가 여럿이면 가장 많이 지목된 사람이 제외됩니다.</p>
+            <p className="gp-text">제외할 대상을 고르세요. 마피아가 여럿이면 가장 많이 지목된 사람이 제외됩니다. 모두 같은 사람을 고르면 2초 뒤 확정되며, 그 전에는 바꿀 수 있습니다.</p>
             <PickOne
               options={t.options.map((p) => ({
                 id: p.id,
@@ -204,6 +204,10 @@ export function WordchainBlock({ m, toast }: P) {
         <p className="gp-text">
           {m.task.kind === 'word.submit' ? (
             <><b>내 차례</b>입니다. '<b>{v.allowed.join("' 또는 '")}</b>'(으)로 시작하는 단어를 아래 입력창에 입력하세요.</>
+          ) : v.challenge ? (
+            <>이의 제기 투표 중 · 끝나면 {m.name(v.nextTurnId)}님 차례</>
+          ) : v.challengeUntil ? (
+            <>이의 제기 확인 중 · 다음은 {m.name(v.nextTurnId)}님 ('<b>{v.allowed.join("' 또는 '")}</b>'(으)로 시작)</>
           ) : (
             <>{m.name(v.currentTurnId)}님 차례 · '<b>{v.allowed.join("' 또는 '")}</b>'(으)로 시작</>
           )}
@@ -220,7 +224,11 @@ export function WordchainBlock({ m, toast }: P) {
       <WordChallenge m={m} toast={toast} />
       <p className="gp-muted gp-note">
         간편 모드: 사전이 없어 형식(완성형 한글 2~8자, 끝 글자, 중복)만 확인합니다.
-        {v.order.length - v.out.length >= 3 ? ' 이상한 단어는 5초 안에 이의를 제기하면 생존자 과반 찬성으로 무효 처리됩니다.' : ' 2명일 때는 이의 제기를 쓸 수 없습니다.'}
+        {v.order.length - v.out.length >= 3
+          ? m.snap.settings.wordchain.challengeSeconds > 0
+            ? ` 단어가 나오면 ${m.snap.settings.wordchain.challengeSeconds}초 동안 이의를 받고, 생존자 과반이 찬성하면 무효(낸 사람 탈락)입니다. 실제 단어인지는 서버가 보장하지 않습니다.`
+            : ' 이의 제기가 꺼져 있습니다.'
+          : ' 2명일 때는 판정할 사람이 없어 이의 제기가 없습니다 (연습용).'}
       </p>
       {v.stage === 'result' && v.result && (
         <div className="gp-result">
@@ -374,14 +382,14 @@ function TwentySetup({ toast, task }: { toast(s: string): void; task: Extract<Se
         >
           <label>
             <span>정답 (다른 사람에게 보이지 않음)</span>
-            <input className="gp-input" value={answer} maxLength={30} onChange={(e) => setAnswer(e.target.value)} placeholder="예: 냉장고" autoFocus />
+            <input className="gp-input" value={answer} maxLength={20} onChange={(e) => setAnswer(e.target.value)} placeholder="예: 냉장고" autoFocus />
           </label>
           <label>
             <span>분류 (공개)</span>
-            <input className="gp-input" value={category} maxLength={20} onChange={(e) => setCategory(e.target.value)} placeholder="예: 사물" />
+            <input className="gp-input" value={category} maxLength={10} onChange={(e) => setCategory(e.target.value)} placeholder="예: 사물" />
           </label>
           <div className="gp-form-actions">
-            <span className="gp-muted">직접 입력한 정답은 철자가 정확히 같아야 정답으로 인정됩니다</span>
+            <span className="gp-muted">한글·영문·숫자 2~20자 · 욕설·개인정보 금지 · 철자가 정확히 같아야 정답으로 인정됩니다</span>
             <button type="submit" className="gp-btn primary" disabled={!answer.trim()}>출제</button>
           </div>
         </form>
@@ -393,7 +401,7 @@ function TwentySetup({ toast, task }: { toast(s: string): void; task: Extract<Se
 export function TwentyBlock({ m, toast }: P) {
   const v = m.twenty!
   const t = m.task
-  const used = v.questions.length
+  const used = v.questions.filter((q) => !q.free).length
   return (
     <div className="gp">
       <div className="gp-title">
@@ -405,7 +413,7 @@ export function TwentyBlock({ m, toast }: P) {
       {v.myRole === 'setter' && v.answer && v.stage !== 'result' && (
         <div className="gp-assign liar">
           정답 <strong>{v.answer}</strong>
-          <span className="gp-muted">질문에 예/아니오로 답하세요. 질문 {v.maxQuestions}개 안에 못 맞히면 출제자가 이깁니다.</span>
+          <span className="gp-muted">질문에 사실대로 예/아니오로 답하세요. '애매함'은 {v.maybeLeft}번 남았고 질문 횟수를 쓰지 않습니다. 질문 {v.maxQuestions}개를 다 쓰거나 8분이 지나면 출제자가 이깁니다. 3번 답하지 않으면 게임이 중단됩니다.</span>
         </div>
       )}
 
@@ -429,6 +437,7 @@ export function TwentyBlock({ m, toast }: P) {
               </span>
               <span className={`gp-reply ${q.kind === 'pass' ? 'maybe' : (q.reply ?? 'pending')}`}>
                 {q.kind === 'guess' ? (q.correct ? '정답' : '실패') : q.kind === 'pass' ? '—' : q.reply ? REPLY_LABEL[q.reply] : '답변 대기'}
+                {q.free ? ' · 횟수 미차감' : ''}
               </span>
             </li>
           ))}
@@ -443,10 +452,13 @@ export function TwentyBlock({ m, toast }: P) {
               <button
                 key={r}
                 type="button"
+                disabled={r === 'maybe' && v.maybeLeft <= 0}
+                title={r === 'maybe' ? `남은 횟수 ${v.maybeLeft}` : undefined}
                 className={`gp-btn${r === 'yes' ? ' primary' : ''}`}
                 onClick={() => void run(gameAction({ type: 'twenty.reply', questionId: t.questionId, reply: r }), toast)}
               >
                 {REPLY_LABEL[r]}
+                {r === 'maybe' ? ` (${v.maybeLeft})` : ''}
               </button>
             ))}
           </div>
@@ -459,7 +471,7 @@ export function TwentyBlock({ m, toast }: P) {
             ? v.pendingId
               ? '출제자의 답변을 기다리는 중입니다.'
               : t.kind === 'twenty.ask'
-                ? `내 차례입니다. 아래 입력창에서 예/아니오 질문을 하거나 정답에 도전하세요 (정답 최대 ${LIMITS.guessMax}자). 둘 다 1회를 씁니다.`
+                ? `내 차례입니다. 아래 입력창에서 예/아니오 질문을 하거나 정답에 도전하세요 (정답 최대 ${LIMITS.guessMax}자). 둘 다 1회를 씁니다 ('애매함' 답은 제외). 전체 8분이 지나면 질문이 남아도 끝납니다.`
                 : `${m.name(v.turnId)}님이 질문할 차례입니다.`
             : v.myRole === 'setter'
               ? '질문이 오면 여기에서 답합니다.'

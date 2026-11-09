@@ -193,7 +193,11 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
           : task.kind === 'mafia.vote'
             ? { title: 'Vote someone out', options: [...task.options.map((p) => p.name), '(abstain)'], pick: (i: number) => act({ type: 'mafia.vote', targetId: task.options[i]?.id ?? null }) }
             : task.kind === 'twenty.reply'
-              ? { title: `Reply: ${task.question}`, options: ['예 (yes)', '아니오 (no)', '애매함 (maybe)'], pick: (i: number) => act({ type: 'twenty.reply', questionId: task.questionId, reply: (['yes', 'no', 'maybe'] as const)[i] }) }
+              ? {
+                  title: `Reply: ${task.question}`,
+                  options: ['예 (yes)', '아니오 (no)', ...((m!.twenty?.maybeLeft ?? 0) > 0 ? [`애매함 (maybe · ${m!.twenty!.maybeLeft} left, free)`] : [])],
+                  pick: (i: number) => act({ type: 'twenty.reply', questionId: task.questionId, reply: (['yes', 'no', 'maybe'] as const)[i] }),
+                }
               : null
     : null
   const selKey = select ? select.title + select.options.join('|') : ''
@@ -446,7 +450,7 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
         if (Number.isInteger(n) && task.options[n - 1]) return act({ type: 'twenty.setup', optionId: task.options[n - 1].id })
         if (!task.freeInput) return err(`usage: /setup <1-${task.options.length}|reroll> (free input is off)`)
         if (!args[0]) return err('usage: /setup <answer> <category>')
-        return act({ type: 'twenty.setup', answer: args[0].slice(0, 30), category: (args.slice(1).join(' ') || '기타').slice(0, 20) })
+        return act({ type: 'twenty.setup', answer: args[0].slice(0, 20), category: (args.slice(1).join(' ') || '기타').slice(0, 10) })
       }
       case '/reply': {
         if (task?.kind !== 'twenty.reply') return err('no pending question')
@@ -469,7 +473,7 @@ export function RelayTab({ active, onShell }: { active: boolean; onShell(): void
           liar: { discuss: 'discussSeconds', describe: 'describeSeconds' },
           quiz: { count: 'questionCount', time: 'seconds' },
           mafia: { night: 'nightSeconds', discuss: 'discussSeconds', vote: 'voteSeconds' },
-          wordchain: { time: 'turnSeconds' },
+          wordchain: { time: 'turnSeconds', challenge: 'challengeSeconds' },
           baseball: { digits: 'digits', rounds: 'maxRounds', time: 'roundSeconds' },
           twenty: { questions: 'maxQuestions', setup: 'setupSeconds' },
         }
@@ -836,7 +840,9 @@ function LiveStatus({ m }: { m: SessionModel }) {
         : <><Spinner /> Challenge vote on '{v.challenge.word}' <span className="t-dim">· {v.challenge.votedIds.length}/{v.challenge.voters.length} voted{clock}</span></>
       : m.task.kind === 'word.submit'
         ? <><span className="t-yellow">✎</span> <b>Your turn</b> — start with <b>{v.allowed.join(' / ')}</b>{clock}</>
-        : <><Spinner /> {m.name(v.currentTurnId)}'s turn — starts with {v.allowed.join(' / ')}<span className="t-dim">{clock}{hint}</span></>
+        : v.challengeUntil !== null && !v.currentTurnId
+          ? <><Spinner /> Open for challenges — next: {m.name(v.nextTurnId)} ({v.allowed.join(' / ')})<span className="t-dim">{clock}{hint}</span></>
+          : <><Spinner /> {m.name(v.currentTurnId)}'s turn — starts with {v.allowed.join(' / ')}<span className="t-dim">{clock}{hint}</span></>
   } else if (m.baseball) {
     const v = m.baseball
     node = m.task.kind === 'baseball.guess'

@@ -127,7 +127,7 @@ export function buildModel(snap: RoomSnapshot): SessionModel {
     liar: `카테고리 ${LIAR_CATEGORY_LABEL[s.liar.category]} · 설명 ${s.liar.describeSeconds}초 · 토론 ${s.liar.discussSeconds}초`,
     quiz: `분야 ${QUIZ_CATEGORY_LABEL[s.quiz.category]} · ${s.quiz.questionCount}문항 · 문항당 ${s.quiz.seconds}초`,
     mafia: `낮 토론 ${s.mafia.discussSeconds}초 · 투표 ${s.mafia.voteSeconds}초 · 밤 ${s.mafia.nightSeconds}초 · 최대 8일`,
-    wordchain: `차례당 ${s.wordchain.turnSeconds}초 · 두음법칙 허용 · 간편 모드(사전 없음)`,
+    wordchain: `차례당 ${s.wordchain.turnSeconds}초 · 두음법칙 허용 · 간편 모드(사전 없음) · ${s.wordchain.challengeSeconds > 0 ? `이의 제기 ${s.wordchain.challengeSeconds}초` : '이의 제기 끔'}`,
     baseball: `${s.baseball.digits}자리 · 최대 ${s.baseball.maxRounds}턴 · 턴당 ${s.baseball.roundSeconds}초`,
     twenty: `질문 ${s.twenty.maxQuestions}개 · 출제자 무작위 · ${s.twenty.freeInput ? '정답 직접 입력' : '정답 은행에서 고르기'}`,
   }[snap.gameType]
@@ -234,6 +234,6 @@ export function liarStepIndex(v: LiarView) {
 }
 
 export const WINNER_LABEL = { liar: '라이어 승리', citizens: '참여자 승리', none: '중단' } as const
-export const MAFIA_WINNER = { mafia: '마피아 승리', citizens: '시민 승리', none: '중단' } as const
+export const MAFIA_WINNER = { mafia: '마피아 승리', citizens: '시민 승리', draw: '무승부', none: '중단' } as const
 export const TWENTY_WINNER = { guessers: '질문자 승리', setter: '출제자 승리', none: '중단' } as const
 export const REPLY_LABEL = { yes: '예', no: '아니오', maybe: '애매함' } as const

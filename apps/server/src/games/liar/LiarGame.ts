@@ -48,7 +48,8 @@ export class LiarGame implements GameEngine {
 
   start() {
     const r = this.ctx.random
-    const cats = LIAR_CATEGORIES.filter((c) => c !== 'random') as Cat[]
+    // 추상어가 많은 '감정·상황'은 설명이 어려워 무작위 출제에서는 빼고, 직접 고를 때만 나온다
+    const cats = LIAR_CATEGORIES.filter((c) => c !== 'random' && c !== 'emotion') as Cat[]
     this.category = this.ctx.settings.category === 'random' ? cats[Math.floor(r() * cats.length)] : this.ctx.settings.category
     const pool = LIAR_WORDS.filter((w) => w.enabled && w.categoryId === this.category)
     this.entry = this.ctx.pickFresh(`liar:${this.category}`, pool, 1)[0]

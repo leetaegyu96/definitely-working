@@ -48,7 +48,34 @@ describe('Room common rules', () => {
     room.say(ps[0], '일반')
     expect(sent.at(-1)!.type === 'chat' && (sent.at(-1) as { scope?: string }).scope).toBeFalsy()
     room.stop(ps[0].id)
-    expect(room.canSee(ps[0].id, m)).toBe(true) // 판이 끝나면 공개
+    // 판이 끝나도 지난 관전 채팅은 공개하지 않는다 (받아 본 사람에게만 계속 보임)
+    expect(room.canSee(ps[0].id, m)).toBe(false)
+    expect(room.canSee(late.id, m)).toBe(true)
+    expect(room.chatFor(ps[0].id).some((x) => x.id === m.id)).toBe(false)
+    // 판이 끝난 뒤의 새 채팅은 일반 채팅
+    room.say(late, '끝났다')
+    expect((sent.at(-1) as { scope?: string }).scope).toBeUndefined()
+  })
+
+  it('a player inside the reconnect grace still counts: quiz does not reveal early', () => {
+    const { clock, room, ps } = makeRoom('quiz', 2)
+    room.configure(ps[0].id, { settings: { quiz: { questionCount: 3, seconds: 20 } } })
+    expect(room.start(ps[0].id).ok).toBe(true)
+    clock.advance(STARTING_MS)
+    const stage = () => (room.snapshotFor(ps[0].id).game as { stage: string }).stage
+    room.detachSocket(ps[1], 's1')
+    clock.advance(1_000)
+    expect(room.action(ps[0].id, { type: 'quiz.answer', choice: 0 }).ok).toBe(true)
+    expect(stage()).toBe('question') // 끊긴 사람이 유예 중 → 기다림
+    room.attachSocket(ps[1], 's1b')
+    expect(room.action(ps[1].id, { type: 'quiz.answer', choice: 1 }).ok).toBe(true) // 복귀 후 제출 유지
+    expect(stage()).toBe('reveal')
+    clock.advance(3_001)
+    room.detachSocket(ps[1], 's1b')
+    room.action(ps[0].id, { type: 'quiz.answer', choice: 0 })
+    expect(stage()).toBe('question')
+    clock.advance(PRESENCE_GRACE_MS + 1) // 유예가 지나면 남은 사람 기준으로 공개
+    expect(stage()).toBe('reveal')
   })
 
   it('rejects input after the deadline and restarts only after the result cooldown', () => {

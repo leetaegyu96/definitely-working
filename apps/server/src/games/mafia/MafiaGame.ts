@@ -1,8 +1,10 @@
 import type { GameAction, MafiaSettings, MafiaStage, MafiaView } from '@relay/shared'
 import { fail, ok, shuffle, type ActionResult, type GameContext, type GameEngine } from '../types.js'
 
-/** 판이 끝없이 길어지지 않도록: 8일째 낮 투표까지 승부가 안 나면 시민 승리 */
+/** 판이 끝없이 길어지지 않도록: 8일째 낮 투표까지 승부가 안 나면 무승부 (시간 제한) */
 export const MAX_DAYS = 8
+/** 마피아 전원이 같은 대상을 고른 뒤 확정까지 기다리는 시간 (그 사이 바꾸면 취소) */
+export const NIGHT_CONFIRM_MS = 2_000
 
 /** 인원별 마피아 수 (시민·마피아만 사용하는 간소화 규칙) */
 export function mafiaCount(n: number) {
@@ -23,6 +25,8 @@ export class MafiaGame implements GameEngine {
   deadline: number | null = null
   private result: MafiaView['result'] = null
   private cancel: (() => void) | null = null
+  /** 밤 단계 원래 마감 (전원 일치 확정 대기 중에도 유지) */
+  private nightEndsAt = 0
 
   constructor(private ctx: GameContext<MafiaSettings>) {}
 
@@ -62,15 +66,16 @@ export class MafiaGame implements GameEngine {
   }
 
   /** 승리 조건 확인 — 끝났으면 true */
-  private checkWin(): boolean {
+  private checkWin(byLeave = false): boolean {
     const m = this.aliveMafia().length
     const c = this.aliveCitizens().length
+    const tail = byLeave ? ' (참가자 이탈로 결정됨)' : ''
     if (m === 0) {
-      this.finish('citizens', '모든 마피아를 찾아냈습니다.')
+      this.finish('citizens', (byLeave ? '남은 마피아가 없습니다.' : '모든 마피아를 찾아냈습니다.') + tail)
       return true
     }
     if (m >= c) {
-      this.finish('mafia', '마피아 수가 시민 수 이상이 되었습니다.')
+      this.finish('mafia', '마피아 수가 시민 수 이상이 되었습니다.' + tail)
       return true
     }
     return false
@@ -80,6 +85,7 @@ export class MafiaGame implements GameEngine {
     this.stage = 'night'
     this.nightVotes.clear()
     this.ctx.emit({ code: 'mafia_night', day: this.day })
+    this.nightEndsAt = this.ctx.now() + this.ctx.settings.nightSeconds * 1000
     this.schedule(this.ctx.settings.nightSeconds * 1000, () => this.resolveNight())
     this.ctx.changed()
   }
@@ -137,11 +143,11 @@ export class MafiaGame implements GameEngine {
     this.lastExecuted = executed
     this.ctx.emit({ code: 'mafia_executed', name: executed ? this.name(executed) : null, votes })
     if (this.checkWin()) return
-    if (this.day >= MAX_DAYS) return this.finish('citizens', `${MAX_DAYS}일 동안 마피아가 이기지 못해 시민이 승리했습니다.`)
+    if (this.day >= MAX_DAYS) return this.finish('draw', `${MAX_DAYS}일 시간 제한까지 승부가 나지 않아 무승부입니다.`)
     this.beginNight()
   }
 
-  private finish(winner: 'mafia' | 'citizens' | 'none', reason: string) {
+  private finish(winner: 'mafia' | 'citizens' | 'draw' | 'none', reason: string) {
     this.cancel?.()
     this.stage = 'result'
     this.deadline = null
@@ -161,11 +167,7 @@ export class MafiaGame implements GameEngine {
         if (!this.mafia.has(playerId) || !aliveMe) return fail('FORBIDDEN', '살아 있는 마피아만 지목할 수 있습니다')
         if (!this.alive.has(action.targetId) || this.mafia.has(action.targetId)) return fail('INVALID', '지목할 수 없는 대상입니다')
         this.nightVotes.set(playerId, action.targetId)
-        // 마피아 전원이 같은 대상을 고르면 즉시 진행
-        const am = this.aliveMafia()
-        const targets = new Set(am.map((m) => this.nightVotes.get(m)))
-        if (am.every((m) => this.nightVotes.has(m)) && targets.size === 1) this.resolveNight()
-        else this.ctx.changed()
+        this.checkNightAgreement()
         return ok
       }
       case 'mafia.skip': {
@@ -191,6 +193,18 @@ export class MafiaGame implements GameEngine {
     }
   }
 
+  /** 마피아 전원이 같은 대상을 고르면 2초 뒤 확정 (그 사이 바꾸면 원래 밤 마감으로 복귀) */
+  private checkNightAgreement() {
+    if (this.stage !== 'night') return
+    const am = this.aliveMafia()
+    const targets = new Set(am.map((m) => this.nightVotes.get(m)))
+    const remaining = Math.max(0, this.nightEndsAt - this.ctx.now())
+    if (am.length > 0 && am.every((m) => this.nightVotes.has(m)) && targets.size === 1)
+      this.schedule(Math.min(NIGHT_CONFIRM_MS, remaining), () => this.resolveNight())
+    else this.schedule(remaining, () => this.resolveNight())
+    this.ctx.changed()
+  }
+
   isOut(playerId: string) {
     return this.players.includes(playerId) && !this.alive.has(playerId) && this.stage !== 'result'
   }
@@ -207,7 +221,8 @@ export class MafiaGame implements GameEngine {
     this.alive.delete(playerId)
     this.nightVotes.delete(playerId)
     this.dayVotes.delete(playerId)
-    if (this.checkWin()) return
+    if (this.checkWin(true)) return
+    if (this.stage === 'night') return this.checkNightAgreement()
     if (this.stage === 'vote' && [...this.alive].every((id) => this.dayVotes.has(id) || !this.ctx.isConnected(id))) return this.resolveVote()
     this.ctx.changed()
   }

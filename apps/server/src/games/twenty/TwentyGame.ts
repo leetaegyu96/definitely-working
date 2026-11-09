@@ -13,6 +13,10 @@ export const REPLY_SECONDS = 15
 export const GAME_LIMIT_MS = 8 * 60_000
 const OPTION_COUNT = 3
 const REROLLS = 2
+/** 출제자가 '애매함'으로 답할 수 있는 횟수 (질문 횟수는 소모하지 않음) */
+export const MAYBE_LIMIT = 2
+/** 출제자가 이만큼 답하지 않으면 게임 중단 */
+export const MISSED_LIMIT = 3
 
 type Question = TwentyView['questions'][number]
 
@@ -23,6 +27,8 @@ export class TwentyGame implements GameEngine {
   private entry: { text: string; aliases: string[]; category: string } = { text: '', aliases: [], category: '' }
   private options: WordEntry[] = []
   private rerollsLeft = REROLLS
+  private maybeLeft = MAYBE_LIMIT
+  private missed = 0
   private questions: Question[] = []
   private pendingId: string | null = null
   private order: string[] = []
@@ -50,8 +56,18 @@ export class TwentyGame implements GameEngine {
     this.cancelLimit?.()
   }
 
+  /** 서로 다른 분류에서 하나씩, 직전 후보와 겹치지 않게 뽑는다 */
   private drawOptions() {
-    this.options = this.ctx.pickFresh('twenty', TWENTY_BANK.filter((w) => w.enabled), OPTION_COUNT)
+    const prev = new Set(this.options.map((o) => o.id))
+    const picked: WordEntry[] = []
+    for (let i = 0; i < OPTION_COUNT; i++) {
+      const used = new Set(picked.map((p) => p.categoryId))
+      const pool = TWENTY_BANK.filter((w) => w.enabled && !prev.has(w.id) && !used.has(w.categoryId) && !picked.includes(w))
+      const fallback = TWENTY_BANK.filter((w) => w.enabled && !prev.has(w.id) && !picked.includes(w))
+      const [w] = this.ctx.pickFresh('twenty', pool.length ? pool : fallback, 1)
+      if (w) picked.push(w)
+    }
+    this.options = picked
   }
 
   private name(id: string | null) {
@@ -115,12 +131,13 @@ export class TwentyGame implements GameEngine {
   }
 
   private used() {
-    return this.questions.length
+    return this.questions.filter((q) => !q.free).length
   }
 
-  /** 1회 소모 후: 횟수가 다 찼으면 출제자 승리, 아니면 다음 차례 */
-  private afterUse() {
+  /** 1회 소모 후: 횟수가 다 찼으면 출제자 승리, 아니면 다음 차례 (sameAsker면 같은 사람이 다시 질문) */
+  private afterUse(sameAsker = false) {
     if (this.used() >= this.ctx.settings.maxQuestions) return this.finish('setter', null, '질문 횟수를 모두 써서 출제자가 승리했습니다.')
+    if (sameAsker && this.order.length) this.turnIdx = (this.turnIdx - 1 + this.order.length) % this.order.length
     this.nextTurn()
   }
 
@@ -153,7 +170,21 @@ export class TwentyGame implements GameEngine {
     q.reply = reply
     this.pendingId = null
     this.ctx.emit({ code: 'twenty_replied', text: q.text, reply, kind: 'question', correct: false })
-    this.afterUse()
+    // '애매함'은 질문 횟수를 쓰지 않고 같은 사람이 질문을 고쳐 다시 묻는다
+    if (reply === 'maybe') q.free = true
+    this.afterUse(reply === 'maybe')
+  }
+
+  /** 출제자가 제한 시간 안에 답하지 않음 */
+  private replyTimeout(q: Question) {
+    this.missed++
+    if (this.missed >= MISSED_LIMIT) {
+      q.reply = 'maybe'
+      q.free = true
+      this.pendingId = null
+      return this.finish('none', null, `출제자가 ${MISSED_LIMIT}번 답하지 않아 게임이 중단되었습니다.`)
+    }
+    this.applyReply(q, 'maybe')
   }
 
   action(playerId: string, action: GameAction): ActionResult {
@@ -169,7 +200,7 @@ export class TwentyGame implements GameEngine {
           return ok
         }
         if (!this.ctx.settings.freeInput) return fail('FORBIDDEN', '직접 입력이 꺼져 있습니다. 후보에서 고르세요')
-        if (!action.answer || !action.category) return fail('INVALID', '정답과 분류를 입력하세요')
+        if (!action.answer || !action.category) return fail('INVALID', '정답(2~20자)과 분류를 입력하세요')
         this.beginAsking({ text: action.answer, aliases: [], category: action.category })
         return ok
       }
@@ -201,7 +232,7 @@ export class TwentyGame implements GameEngine {
         this.ctx.emit({ code: 'twenty_asked', name: this.name(playerId), text: q.text, kind: 'question' })
         this.pendingId = q.id
         // 출제자가 답하지 않으면 "애매함"으로 자동 처리
-        this.schedule(REPLY_SECONDS * 1000, () => this.applyReply(q, 'maybe'))
+        this.schedule(REPLY_SECONDS * 1000, () => this.replyTimeout(q))
         this.ctx.changed()
         return ok
       }
@@ -210,6 +241,10 @@ export class TwentyGame implements GameEngine {
         if (!isSetter) return fail('FORBIDDEN', '출제자만 답할 수 있습니다')
         const q = this.questions.find((x) => x.id === action.questionId)
         if (!q || q.id !== this.pendingId) return fail('INVALID', '답할 질문이 아닙니다')
+        if (action.reply === 'maybe') {
+          if (this.maybeLeft <= 0) return fail('BAD_STATE', `'애매함'은 한 게임에 ${MAYBE_LIMIT}번까지만 쓸 수 있습니다`)
+          this.maybeLeft--
+        }
         this.applyReply(q, action.reply)
         return ok
       }
@@ -253,6 +288,7 @@ export class TwentyGame implements GameEngine {
       turnId: this.turnId,
       options: isSetter && this.stage === 'setup' ? this.options.map((o) => ({ id: o.id, answer: o.text, category: o.categoryId })) : null,
       rerollsLeft: isSetter ? this.rerollsLeft : 0,
+      maybeLeft: this.maybeLeft,
       freeInput: this.ctx.settings.freeInput,
       endsAt: this.endsAt,
       myRole: !inGame ? 'spectator' : isSetter ? 'setter' : 'guesser',

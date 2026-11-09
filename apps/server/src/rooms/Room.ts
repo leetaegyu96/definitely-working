@@ -63,6 +63,8 @@ export class Room {
   /** 콘텐츠 종류별 최근 출제 id (연속 반복 방지) */
   private recent = new Map<string, string[]>()
   private resultAt = 0
+  /** 판 번호별로 관전 채팅을 받아 본 사람 — 판이 끝나도 이 사람들에게만 계속 보인다 */
+  private outAudience = new Map<number, Set<string>>()
   disposed = false
 
   constructor(
@@ -190,6 +192,11 @@ export class Room {
     if (image) this.expireOldImages()
     // 진행 중인 판에서 빠진 사람(관전자·사망·탈락)의 말은 같은 처지끼리만 본다
     const out = this.phase === 'PLAYING' && this.isOut(p.id)
+    if (out) {
+      const aud = this.outAudience.get(this.round) ?? new Set<string>()
+      for (const m of this.players.values()) if (this.isOut(m.id)) aud.add(m.id)
+      this.outAudience.set(this.round, aud)
+    }
     this.push({
       id: newId(),
       ts: this.clock.now(),
@@ -198,7 +205,7 @@ export class Room {
       authorName: p.name,
       text,
       ...(image ? { image } : {}),
-      ...(out ? { scope: 'out' as const } : {}),
+      ...(out ? { scope: 'out' as const, round: this.round } : {}),
     })
   }
 
@@ -209,10 +216,15 @@ export class Room {
     return p.spectator || !!this.game?.isOut?.(id)
   }
 
-  /** 이 사람이 볼 수 있는 메시지인지 (관전자 대화는 판이 끝나면 모두에게 공개) */
+  /**
+   * 이 사람이 볼 수 있는 메시지인지.
+   * 관전 채팅은 진행 중에는 그 판에서 빠진 사람에게만 보이고, 판이 끝난 뒤에도 공개하지 않는다
+   * (역할 추리 등 민감한 내용이 있을 수 있음). 판이 끝난 뒤의 새 채팅은 일반 채팅.
+   */
   canSee(id: string, m: ChatMessage) {
     if (m.type !== 'chat' || m.scope !== 'out') return true
-    return this.phase !== 'PLAYING' || this.isOut(id)
+    if (this.phase === 'PLAYING' && m.round === this.round && this.isOut(id)) return true
+    return m.round !== undefined && !!this.outAudience.get(m.round)?.has(id)
   }
 
   chatFor(id: string, limit = 100) {
@@ -315,7 +327,8 @@ export class Room {
       now: () => this.clock.now(),
       random: () => this.clock.random(),
       setTimer: (ms, fn) => this.clock.setTimer(ms, () => !this.disposed && fn()),
-      isConnected: (id) => (this.players.get(id)?.sockets.size ?? 0) > 0,
+      // 재접속 유예(10초) 중인 사람도 "있는 사람"으로 본다 → 잠깐 끊긴 사이 투표·정답 공개가 앞당겨지지 않음
+      isConnected: (id) => (this.players.get(id)?.sockets.size ?? 0) > 0 || this.graceTimers.has(id),
       emit: (e) => this.event(e),
       changed: () => this.changed(),
       finish: () => {

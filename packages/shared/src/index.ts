@@ -120,6 +120,18 @@ export const QUIZ_CATEGORY_LABEL: Record<QuizCategory, string> = {
   life: '음식·생활',
 }
 
+/** 분야별 퀴즈 보유 문항 수 (설정 화면 상한 안내용 · 서버 테스트가 실제 문제 은행과 일치하는지 검사) */
+export const QUIZ_POOL_SIZE: Record<QuizCategory, number> = {
+  random: 125,
+  general: 24,
+  it: 27,
+  science: 22,
+  history: 22,
+  language: 10,
+  media: 10,
+  life: 10,
+}
+
 export const liarSettingsSchema = z.object({
   category: z.enum(LIAR_CATEGORIES).default('random'),
   describeSeconds: z.number().int().min(15).max(60).default(25),
@@ -137,6 +149,8 @@ export const mafiaSettingsSchema = z.object({
 })
 export const wordchainSettingsSchema = z.object({
   turnSeconds: z.number().int().min(5).max(45).default(15),
+  /** 단어가 나온 뒤 이의 제기를 기다리는 시간 (0 = 이의 제기 끔). 이 동안 다음 차례는 시작하지 않는다 */
+  challengeSeconds: z.number().int().min(0).max(5).default(5),
 })
 export const baseballSettingsSchema = z.object({
   digits: z.number().int().min(3).max(4).default(3),
@@ -258,7 +272,7 @@ export type SystemEvent =
   | { code: 'mafia_vote_open'; day: number }
   | { code: 'mafia_executed'; name: string | null; votes: number }
   | { code: 'mafia_gone'; name: string }
-  | { code: 'mafia_result'; winner: 'mafia' | 'citizens' | 'none'; mafiaNames: string[]; reason: string }
+  | { code: 'mafia_result'; winner: 'mafia' | 'citizens' | 'draw' | 'none'; mafiaNames: string[]; reason: string }
   | { code: 'word_played'; name: string; word: string }
   | { code: 'word_out'; name: string; reason: 'timeout' | 'rejected' | 'left' }
   | { code: 'word_challenge'; by: string; word: string; author: string; seconds: number }
@@ -293,6 +307,8 @@ export type ChatMessage =
       imageExpired?: boolean
       /** 관전자·탈락자 전용 대화 (진행 중인 판에 영향을 주지 않도록 생존자에게는 보내지 않음) */
       scope?: 'out'
+      /** scope:'out' 메시지가 작성된 판 번호 */
+      round?: number
     }
   | { id: string; ts: number; type: 'event'; event: SystemEvent }
 
@@ -371,7 +387,7 @@ export interface MafiaView {
   /** 마피아에게만: 밤 지목 현황 */
   nightVotes: Record<string, string>
   lastExecuted: string | null | undefined
-  result: { winner: 'mafia' | 'citizens' | 'none'; roles: Record<string, 'mafia' | 'citizen'>; reason: string } | null
+  result: { winner: 'mafia' | 'citizens' | 'draw' | 'none'; roles: Record<string, 'mafia' | 'citizen'>; reason: string } | null
 }
 
 export interface WordchainView {
@@ -385,8 +401,10 @@ export interface WordchainView {
   /** 다음 단어가 시작해야 하는 글자 (두음법칙 포함) */
   allowed: string[]
   deadline: number | null
-  /** 사전이 없는 간편 모드: 직전 단어에 이의를 제기할 수 있는 마감 시각 (없으면 null) */
+  /** 사전이 없는 간편 모드: 직전 단어에 이의를 제기할 수 있는 마감 시각 (없으면 null).
+   *  이 시간 동안은 currentTurnId가 null이고 nextTurnId가 다음 차례 */
   challengeUntil: number | null
+  nextTurnId: string | null
   /** 이의 제기 투표 (생존자 과반 찬성 시 무효 → 낸 사람 탈락) */
   challenge: {
     byId: string
@@ -438,7 +456,18 @@ export interface TwentyView {
   answer: string | null
   maxQuestions: number
   /** 오답 도전의 text는 도전자·출제자에게만 보이고 나머지에게는 빈 문자열 */
-  questions: { id: string; askerId: string; text: string; kind: 'question' | 'guess' | 'pass'; reply: TwentyReply | null; correct: boolean }[]
+  questions: {
+    id: string
+    askerId: string
+    text: string
+    kind: 'question' | 'guess' | 'pass'
+    reply: TwentyReply | null
+    correct: boolean
+    /** '애매함'·무응답이라 질문 횟수에서 빠진 질문 (같은 사람이 다시 질문) */
+    free?: boolean
+  }[]
+  /** 출제자가 '애매함'을 고를 수 있는 남은 횟수 */
+  maybeLeft: number
   pendingId: string | null
   deadline: number | null
   result: { winner: 'guessers' | 'setter' | 'none'; answer: string; solverId: string | null; reason: string } | null
@@ -506,8 +535,8 @@ export const gameActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('twenty.setup'),
     optionId: z.string().min(1).max(40).optional(),
-    answer: z.string().trim().min(1).max(30).optional(),
-    category: z.string().trim().min(1).max(20).optional(),
+    answer: z.string().trim().min(2).max(20).regex(/^[가-힣a-zA-Z0-9 ]+$/, '정답은 한글·영문·숫자 2~20자로 입력하세요').optional(),
+    category: z.string().trim().min(1).max(10).regex(/^[가-힣a-zA-Z0-9·, ]+$/, '분류는 한글·영문·숫자 10자 이내로 입력하세요').optional(),
   }),
   z.object({ type: z.literal('twenty.reroll') }),
   z.object({ type: z.literal('twenty.ask'), text: z.string().trim().min(1).max(100) }),

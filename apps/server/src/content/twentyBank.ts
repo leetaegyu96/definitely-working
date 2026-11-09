@@ -121,5 +121,5 @@ export const TWENTY_BANK: WordEntry[] = [
   { id: 'twenty-6-017', categoryId: "교통수단", text: "소방차", aliases: [], difficulty: 'easy', enabled: true },
   { id: 'twenty-6-018', categoryId: "교통수단", text: "스쿨버스", aliases: [], difficulty: 'easy', enabled: true },
   { id: 'twenty-6-019', categoryId: "교통수단", text: "경운기", aliases: [], difficulty: 'easy', enabled: true },
-  { id: 'twenty-6-020', categoryId: "교통수단", text: "유모차", aliases: [], difficulty: 'easy', enabled: true },
+  { id: 'twenty-6-020', categoryId: "교통수단", text: "요트", aliases: [], difficulty: 'easy', enabled: true },
 ]

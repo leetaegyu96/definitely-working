@@ -5,6 +5,8 @@ import {
   LIAR_CATEGORY_LABEL,
   QUIZ_CATEGORIES,
   QUIZ_CATEGORY_LABEL,
+  QUIZ_POOL_SIZE,
+  type QuizCategory,
   type GameType,
 } from '@relay/shared'
 import { Check, Circle, CircleDot, Copy, Loader2, X } from 'lucide-react'
@@ -155,7 +157,10 @@ const FIELDS: Record<GameType, Field[]> = {
     { key: 'voteSeconds', label: '낮 투표', options: secs([15, 30, 45, 60]) },
     { key: 'nightSeconds', label: '밤 시간', options: secs([15, 20, 30, 45, 60]) },
   ],
-  wordchain: [{ key: 'turnSeconds', label: '차례당 시간', options: secs([10, 15, 20, 30, 45]) }],
+  wordchain: [
+    { key: 'turnSeconds', label: '차례당 시간', options: secs([10, 15, 20, 30, 45]) },
+    { key: 'challengeSeconds', label: '이의 제기 대기', options: secs([0, 2, 3, 5], '끄기') },
+  ],
   baseball: [
     { key: 'digits', label: '자릿수', options: [[3, '3자리'], [4, '4자리']] },
     { key: 'maxRounds', label: '최대 턴', options: [5, 10, 15, 20].map((n) => [n, `${n}턴`]) },
@@ -197,10 +202,22 @@ export function SettingsEditor({ m, toast, onDone }: { m: SessionModel; toast(s:
               setVals((p) => ({ ...p, [type]: { ...p[type], [f.key]: v } }))
             }}
           >
-            {f.options.map(([v, l]) => (
-              <option key={String(v)} value={String(v)}>{l}</option>
-            ))}
+            {f.options.map(([v, l]) => {
+              // 퀴즈 문항 수: 고른 분야의 보유 문항보다 많으면 시작할 수 없으므로 막아 둔다
+              const over = type === 'quiz' && f.key === 'questionCount' && Number(v) > QUIZ_POOL_SIZE[vals.quiz.category as QuizCategory]
+              return (
+                <option key={String(v)} value={String(v)} disabled={over}>
+                  {l}{over ? ' (문항 부족)' : ''}
+                </option>
+              )
+            })}
           </select>
+          {type === 'quiz' && f.key === 'questionCount' && (
+            <span className="gp-muted">이 분야 최대 {QUIZ_POOL_SIZE[vals.quiz.category as QuizCategory]}문항</span>
+          )}
+          {type === 'twenty' && f.key === 'freeInput' && vals.twenty.freeInput === true && (
+            <span className="gp-muted">정답은 한글·영문·숫자 2~20자. 욕설·개인정보는 쓰지 마세요.</span>
+          )}
         </label>
       ))}
       <div className="gp-form-actions">
@@ -325,7 +342,7 @@ function LiarBlock({ m, toast }: { m: SessionModel; toast(s: string): void }) {
       {v.stage === 'describe' && (
         <p className="gp-text">
           {m.task.kind === 'liar.describe'
-            ? '내 차례입니다. 아래 입력창에 설명을 입력하세요.'
+            ? '내 차례입니다. 아래 입력창에 설명을 입력하세요. 제시어(또는 같은 뜻의 말)를 그대로 쓰지는 마세요.'
             : `${m.name(v.currentTurnId)}님이 설명을 작성하고 있습니다.`}
         </p>
       )}
@@ -376,6 +393,7 @@ function LiarVote({ m, toast }: { m: SessionModel; toast(s: string): void }) {
       <p className="gp-text">
         {v.revote ? '동률이 나와 후보를 좁혀 재투표합니다. ' : ''}
         라이어로 의심되는 사람을 한 명 선택하세요. 기권할 수 있고, 제출 후에는 바꿀 수 없습니다.
+        {v.revote ? ' 결선도 동률이거나 모두 기권하면 라이어가 이깁니다.' : ' 아무도 지목받지 못하면(전원 기권) 라이어가 이깁니다.'}
         <span className="gp-muted"> · {voted}/{total}명 완료</span>
       </p>
       {t && t.myVote === undefined && (
